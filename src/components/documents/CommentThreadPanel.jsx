@@ -61,6 +61,8 @@ export default function CommentThreadPanel({
   onSelectComment,
   currentUser,
   viewerRole,
+  canPost = true,
+  canReplyOn = null,
 }) {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
 
@@ -146,15 +148,23 @@ export default function CommentThreadPanel({
     <aside className="pdf-comment-panel">
       <div className="pdf-comment-panel-header">
         <h4>Comments</h4>
-        <button
-          type="button"
-          className={`pdf-comment-add-btn${drawingEnabled ? " is-active" : ""}`}
-          onClick={onStartDrawing}
-          title="Drag a region on the PDF to anchor a new comment"
-        >
-          {drawingEnabled ? "Cancel" : "+ Add comment"}
-        </button>
+        {canPost && (
+          <button
+            type="button"
+            className={`pdf-comment-add-btn${drawingEnabled ? " is-active" : ""}`}
+            onClick={onStartDrawing}
+            title="Drag a region on the PDF to anchor a new comment"
+          >
+            {drawingEnabled ? "Cancel" : "+ Add comment"}
+          </button>
+        )}
       </div>
+      {!canPost && (
+        <div className="pdf-comment-hint">
+          This document is not at your office's stage. You can view the existing
+          conversation but cannot post new comments right now.
+        </div>
+      )}
 
       {drawingEnabled && !drafting && (
         <div className="pdf-comment-hint">
@@ -230,8 +240,12 @@ export default function CommentThreadPanel({
           const canReopen =
             isMine && viewerRole === "reviewer" && c.resolved;
 
-          // Reply authorship limited to the original commenter and the requesting org.
-          const canReply = isMine || viewerRole === "org";
+          // Reply authorship: prefer the stage-scoped predicate when provided
+          // (used by ReviewPage and stage-aware portal contexts). Fall back to
+          // the legacy "original commenter OR requesting org" rule.
+          const canReply = canReplyOn
+            ? canReplyOn(c)
+            : (isMine || viewerRole === "org");
 
           return (
             <div

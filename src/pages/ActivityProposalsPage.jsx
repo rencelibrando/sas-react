@@ -2,7 +2,12 @@ import { useState, useEffect, useMemo } from "react";
 import { auth } from "../config/firebase";
 import { getUserById } from "../services/userService";
 import { getOrganizationById } from "../services/organizationService";
-import { getDocumentsByOrganization, getDocumentById, getDocumentStatusHistory } from "../services/documentService";
+import {
+  getDocumentsByOrganization,
+  getDocumentById,
+  getDocumentStatusHistory,
+  uploadAdditionalDocument,
+} from "../services/documentService";
 import Navbar from "../components/Navbar";
 import DashboardLayout from "../components/DashboardLayout";
 import ProposalSubmission from "../components/proposals/ProposalSubmission";
@@ -111,6 +116,107 @@ const PipelineProgress = ({ proposal }) => {
   );
 };
 
+const ORG_REQUEST_STATUS_LABEL = {
+  pending: "Awaiting your upload",
+  uploaded: "Uploaded — under SAS review",
+  resolved: "Resolved by SAS",
+  cancelled: "Cancelled by SAS",
+};
+
+const OrgAdditionalRequestsPanel = ({
+  requests,
+  busyId,
+  error,
+  onUpload,
+  onPreview,
+}) => {
+  const sorted = [...requests].sort((a, b) => {
+    const order = { pending: 0, uploaded: 1, resolved: 2, cancelled: 3 };
+    return (order[a.status] ?? 9) - (order[b.status] ?? 9);
+  });
+  const openCount = sorted.filter(
+    (r) => r.status === "pending" || r.status === "uploaded"
+  ).length;
+
+  return (
+    <div className="org-additional-requests-section">
+      <h4 className="actions-section-title">
+        Additional Documents Requested by SAS
+        {openCount > 0 && (
+          <span className="open-count-pill"> {openCount} open</span>
+        )}
+      </h4>
+      <p className="org-additional-help">
+        SAS has requested the following supplementary documents for this proposal.
+        Upload the file for each pending item. SAS will review and resolve each
+        request before forwarding your proposal to the VPAA.
+      </p>
+      {error && <p className="form-error">{error}</p>}
+      <ul className="additional-requests-list">
+        {sorted.map((req) => {
+          const busy = busyId === req.id;
+          const isClosed = req.status === "resolved" || req.status === "cancelled";
+          return (
+            <li
+              key={req.id}
+              className={`additional-request-item status-${req.status}`}
+            >
+              <div className="additional-request-main">
+                <div className="additional-request-label">{req.label}</div>
+                {req.description && (
+                  <p className="additional-request-desc">{req.description}</p>
+                )}
+                <div className="additional-request-status">
+                  <span className={`request-status-pill status-${req.status}`}>
+                    {ORG_REQUEST_STATUS_LABEL[req.status] || req.status}
+                  </span>
+                </div>
+                {req.file && (
+                  <div className="additional-request-file">
+                    <button
+                      type="button"
+                      className="file-download-link file-preview-btn"
+                      onClick={() => onPreview(req)}
+                    >
+                      📄 {req.file.fileName}
+                      {req.file.version > 1 ? ` (v${req.file.version})` : ""}
+                    </button>
+                  </div>
+                )}
+              </div>
+              {!isClosed && (
+                <div className="additional-request-actions">
+                  <label
+                    className={`form-button form-button-primary ${busy ? "is-busy" : ""}`}
+                    style={{ cursor: busy ? "wait" : "pointer" }}
+                  >
+                    {busy
+                      ? "Uploading..."
+                      : req.file
+                      ? "Replace file"
+                      : "Upload file"}
+                    <input
+                      type="file"
+                      accept="application/pdf,.pdf,.doc,.docx,image/jpeg,image/png"
+                      style={{ display: "none" }}
+                      disabled={busy}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = "";
+                        if (file) onUpload(req.id, file);
+                      }}
+                    />
+                  </label>
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+};
+
 const ActivityProposalsPage = () => {
   const [loading, setLoading] = useState(true);
   const [userData, setUserData] = useState(null);
@@ -182,7 +288,7 @@ const ActivityProposalsPage = () => {
       setLoadingDetail(true);
       const doc = await getDocumentById(proposalId);
       setSelectedProposal(doc);
-      
+
       // Fetch status history
       const history = await getDocumentStatusHistory(proposalId);
       setSelectedProposalHistory(history);
@@ -190,6 +296,35 @@ const ActivityProposalsPage = () => {
       console.error("Error loading proposal details:", error);
     } finally {
       setLoadingDetail(false);
+    }
+  };
+
+  const [additionalUploadBusyId, setAdditionalUploadBusyId] = useState(null);
+  const [additionalUploadError, setAdditionalUploadError] = useState("");
+
+  const handleUploadAdditional = async (requestId, file) => {
+    if (!selectedProposal || !file) return;
+    setAdditionalUploadBusyId(requestId);
+    setAdditionalUploadError("");
+    try {
+      await uploadAdditionalDocument({
+        documentId: selectedProposal.documentId,
+        requestId,
+        file,
+        userId: auth.currentUser.uid,
+      });
+      // Refresh detail + list
+      await handleViewProposal(selectedProposal.documentId);
+      if (userData?.organizationId) {
+        const docs = await getDocumentsByOrganization(userData.organizationId, {
+          documentType: "activity_proposal",
+        });
+        setProposals(docs);
+      }
+    } catch (err) {
+      setAdditionalUploadError(err.message || "Failed to upload document.");
+    } finally {
+      setAdditionalUploadBusyId(null);
     }
   };
 
@@ -361,6 +496,9 @@ const ActivityProposalsPage = () => {
                     <tbody>
                       {filteredProposals.map((proposal) => {
                       const display = getProposalDisplayStatus(proposal);
+                      const openAddl = (proposal.additionalRequests || []).filter(
+                        (r) => r.status === "pending"
+                      ).length;
                       return (
                     <tr key={proposal.documentId}>
                       <td className="table-title">{proposal.title}</td>
@@ -369,6 +507,11 @@ const ActivityProposalsPage = () => {
                         <span className={`status-badge ${display.badgeClass}`}>
                           {display.label}
                         </span>
+                        {openAddl > 0 && (
+                          <div className="open-additional-chip">
+                            📎 {openAddl} additional doc{openAddl === 1 ? "" : "s"} requested
+                          </div>
+                        )}
                       </td>
                       <td>{formatDateTime(proposal.lastUpdated)}</td>
                       <td className="table-remarks">
@@ -507,6 +650,27 @@ const ActivityProposalsPage = () => {
                         )}
                       </div>
 
+                      {/* Additional documents requested by SAS */}
+                      {(selectedProposal.additionalRequests || []).length > 0 && (
+                        <OrgAdditionalRequestsPanel
+                          requests={selectedProposal.additionalRequests}
+                          busyId={additionalUploadBusyId}
+                          error={additionalUploadError}
+                          onUpload={handleUploadAdditional}
+                          onPreview={(req) =>
+                            setPreviewFile({
+                              fileUrl: req.file.fileUrl,
+                              fileName: req.file.fileName,
+                              title: req.label,
+                              documentId: selectedProposal.documentId,
+                              requirementKey: `additional:${req.id}`,
+                              fileVersion: req.file.version || 1,
+                              previousVersion: req.file.previousVersion || null,
+                            })
+                          }
+                        />
+                      )}
+
                       {/* Pipeline Progress */}
                       <PipelineProgress proposal={selectedProposal} />
 
@@ -563,6 +727,9 @@ const ActivityProposalsPage = () => {
             role: userData.userRole || userData.role,
           } : null}
           viewerRole="org"
+          documentStage={selectedProposal?.pipeline?.currentStage || null}
+          authorScope="submitter"
+          canPost={!!selectedProposal?.pipeline?.currentStage}
           onRevisionUploaded={() => {
             if (selectedProposal?.documentId) {
               handleViewProposal(selectedProposal.documentId);

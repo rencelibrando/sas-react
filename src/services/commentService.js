@@ -88,7 +88,7 @@ export function subscribeToUnresolvedReviewerComments(documentId, callback) {
   );
 }
 
-export function subscribeToComments(documentId, requirementKey, callback) {
+export function subscribeToComments(documentId, requirementKey, callback, options = {}) {
   if (!documentId || !requirementKey) {
     callback([]);
     return () => {};
@@ -98,10 +98,20 @@ export function subscribeToComments(documentId, requirementKey, callback) {
     where("requirementKey", "==", requirementKey),
     orderBy("createdAt", "asc")
   );
+  // visibleStages: null/undefined → see everything; array → only comments whose
+  // `stage` field is in the list (legacy comments without `stage` are treated as
+  // visible to everyone for backward compatibility).
+  const visibleStages = options.visibleStages || null;
   return onSnapshot(
     q,
     (snap) => {
-      const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const items = snap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .filter((c) => {
+          if (!visibleStages) return true;
+          if (!c.stage) return true;
+          return visibleStages.includes(c.stage);
+        });
       callback(items);
     },
     (err) => {
@@ -120,6 +130,9 @@ export async function createComment({
   authorUid,
   authorName,
   authorRole,
+  authorSide,
+  authorScope,
+  stage,
 }) {
   if (!documentId || !requirementKey) throw new Error("documentId and requirementKey required");
   if (!text?.trim()) throw new Error("Comment text is required");
@@ -131,6 +144,9 @@ export async function createComment({
     authorUid,
     authorName: authorName || "Unknown",
     authorRole: authorRole || "",
+    authorSide: authorSide || "reviewer",
+    authorScope: authorScope || null,
+    stage: stage || null,
     createdAt: serverTimestamp(),
     resolved: false,
   });
@@ -174,6 +190,7 @@ export async function addReply({
   authorName,
   authorRole,
   authorSide,
+  authorScope,
 }) {
   if (!documentId || !commentId) throw new Error("documentId and commentId required");
   if (!text?.trim()) throw new Error("Reply text is required");
@@ -186,6 +203,7 @@ export async function addReply({
       authorName: authorName || "User",
       authorRole: authorRole || "",
       authorSide: authorSide || "reviewer",
+      authorScope: authorScope || null,
       createdAt: Timestamp.now(),
     }),
   });

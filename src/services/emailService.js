@@ -93,6 +93,33 @@ export const sendCredentialsEmail = async (toEmail, loginEmail, password, organi
   }
 };
 
+export const sendAdditionalDocRequestEmail = async ({
+  to,
+  recipientName,
+  documentTitle,
+  requestLabel,
+  requestDescription,
+  portalUrl,
+}) => {
+  const response = await fetch(`${API_BASE_URL}/api/send-additional-doc-request`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      to,
+      recipientName,
+      documentTitle,
+      requestLabel,
+      requestDescription,
+      portalUrl,
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || "Failed to send notification email");
+  }
+  return data;
+};
+
 export const sendReviewLinkEmail = async (toEmail, documentTitle, reviewUrl, officeName) => {
   const response = await fetch(`${API_BASE_URL}/api/send-review-link`, {
     method: "POST",

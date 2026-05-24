@@ -12,9 +12,17 @@ import {
   returnFromSAS,
   releaseFromSASToISG,
   markProposalFileViewed,
+  getDocumentById,
+  createAdditionalRequest,
+  resolveAdditionalRequest,
+  reopenAdditionalRequest,
+  cancelAdditionalRequest,
 } from "../services/documentService";
 import { getAllOfficeProfiles } from "../services/officeService";
-import { sendReviewLinkEmail } from "../services/emailService";
+import {
+  sendReviewLinkEmail,
+  sendAdditionalDocRequestEmail,
+} from "../services/emailService";
 import AdminLayout from "../components/admin/AdminLayout";
 import LoadingScreen from "../components/LoadingScreen";
 import DocumentPreviewModal from "../components/documents/DocumentPreviewModal";
@@ -53,6 +61,180 @@ const STAGE_TABS = [
 
 const getStageLabel = (stage) =>
   STAGE_LABELS[stage] || (stage ? stage.replace(/_/g, " ") : "—");
+
+const REQUEST_STATUS_LABEL = {
+  pending: "Awaiting upload",
+  uploaded: "Uploaded — needs review",
+  resolved: "Resolved",
+  cancelled: "Cancelled",
+};
+
+const AdditionalRequestsPanel = ({
+  requests,
+  showAddForm,
+  setShowAddForm,
+  newLabel,
+  setNewLabel,
+  newDescription,
+  setNewDescription,
+  creating,
+  error,
+  busyId,
+  onCreate,
+  onResolve,
+  onReopen,
+  onCancel,
+  onPreview,
+}) => {
+  const sorted = [...requests].sort((a, b) => {
+    const order = { pending: 0, uploaded: 1, resolved: 2, cancelled: 3 };
+    return (order[a.status] ?? 9) - (order[b.status] ?? 9);
+  });
+
+  return (
+    <div className="additional-requests-section">
+      <div className="additional-requests-header">
+        <h4 className="actions-section-title">Additional Document Requests</h4>
+        {!showAddForm && (
+          <button
+            type="button"
+            className="form-button form-button-secondary"
+            onClick={() => setShowAddForm(true)}
+          >
+            + Request Additional Document
+          </button>
+        )}
+      </div>
+
+      {showAddForm && (
+        <div className="additional-request-form">
+          <div className="form-group">
+            <label className="form-label">Document name *</label>
+            <input
+              type="text"
+              className="filter-input"
+              placeholder="e.g. Venue MOA, Parental Consent Forms"
+              value={newLabel}
+              onChange={(e) => setNewLabel(e.target.value)}
+              disabled={creating}
+              maxLength={120}
+            />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Description / instructions</label>
+            <textarea
+              className="filter-input"
+              rows={3}
+              placeholder="Explain what the organization needs to provide and why."
+              value={newDescription}
+              onChange={(e) => setNewDescription(e.target.value)}
+              disabled={creating}
+              maxLength={1000}
+            />
+          </div>
+          {error && <p className="form-error">{error}</p>}
+          <div className="modal-actions">
+            <button
+              type="button"
+              className="form-button form-button-secondary"
+              onClick={() => {
+                setShowAddForm(false);
+                setNewLabel("");
+                setNewDescription("");
+              }}
+              disabled={creating}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="form-button form-button-primary"
+              onClick={onCreate}
+              disabled={creating || !newLabel.trim()}
+            >
+              {creating ? "Sending..." : "Send Request"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {sorted.length === 0 ? (
+        <p className="additional-requests-empty">
+          No additional documents have been requested for this proposal.
+        </p>
+      ) : (
+        <ul className="additional-requests-list">
+          {sorted.map((req) => {
+            const isOpen = req.status === "pending" || req.status === "uploaded";
+            const busy = busyId === req.id;
+            return (
+              <li
+                key={req.id}
+                className={`additional-request-item status-${req.status}`}
+              >
+                <div className="additional-request-main">
+                  <div className="additional-request-label">{req.label}</div>
+                  {req.description && (
+                    <p className="additional-request-desc">{req.description}</p>
+                  )}
+                  <div className="additional-request-status">
+                    <span className={`request-status-pill status-${req.status}`}>
+                      {REQUEST_STATUS_LABEL[req.status] || req.status}
+                    </span>
+                  </div>
+                  {req.file && (
+                    <div className="additional-request-file">
+                      <button
+                        type="button"
+                        className="file-download-link file-preview-btn"
+                        onClick={() => onPreview(req)}
+                      >
+                        📄 {req.file.fileName}
+                        {req.file.version > 1 ? ` (v${req.file.version})` : ""}
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="additional-request-actions">
+                  {isOpen && (
+                    <button
+                      type="button"
+                      className="form-button form-button-primary"
+                      onClick={() => onResolve(req.id)}
+                      disabled={busy}
+                    >
+                      {busy ? "..." : "Mark Resolved"}
+                    </button>
+                  )}
+                  {req.status === "resolved" && (
+                    <button
+                      type="button"
+                      className="form-button form-button-secondary"
+                      onClick={() => onReopen(req.id)}
+                      disabled={busy}
+                    >
+                      {busy ? "..." : "Reopen"}
+                    </button>
+                  )}
+                  {isOpen && (
+                    <button
+                      type="button"
+                      className="form-button form-button-secondary"
+                      onClick={() => onCancel(req.id)}
+                      disabled={busy}
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+};
 
 const AdminActivityProposals = () => {
   const [loading, setLoading] = useState(true);
@@ -109,6 +291,19 @@ const AdminActivityProposals = () => {
 
   // Release to ISG (sas_release stage)
   const [releaseLoading, setReleaseLoading] = useState(false);
+
+  // Additional document requests (sas_review stage only)
+  const [showAddRequestForm, setShowAddRequestForm] = useState(false);
+  const [newRequestLabel, setNewRequestLabel] = useState("");
+  const [newRequestDescription, setNewRequestDescription] = useState("");
+  const [creatingRequest, setCreatingRequest] = useState(false);
+  const [requestError, setRequestError] = useState("");
+  const [requestBusyId, setRequestBusyId] = useState(null);
+
+  const additionalRequests = selectedProposal?.additionalRequests || [];
+  const openAdditionalRequestCount = additionalRequests.filter(
+    (r) => r.status === "pending" || r.status === "uploaded"
+  ).length;
 
   const fileInputRef = useRef(null);
 
@@ -330,6 +525,134 @@ const AdminActivityProposals = () => {
     setForwardError("");
     setReturnRemarks("");
     setReturnError("");
+    setShowAddRequestForm(false);
+    setNewRequestLabel("");
+    setNewRequestDescription("");
+    setRequestError("");
+    setRequestBusyId(null);
+  };
+
+  // Re-fetch the selected proposal so additional-request state updates locally
+  // without reloading the entire list. Keeps enrichment fields (org name etc.).
+  const refreshSelectedProposal = async () => {
+    if (!selectedProposal?.documentId) return;
+    try {
+      const fresh = await getDocumentById(selectedProposal.documentId);
+      if (!fresh) return;
+      setSelectedProposal((prev) => (prev ? { ...prev, ...fresh } : prev));
+    } catch (err) {
+      console.error("Failed to refresh proposal:", err);
+    }
+  };
+
+  const handleCreateAdditionalRequest = async () => {
+    if (!selectedProposal) return;
+    const label = newRequestLabel.trim();
+    if (!label) {
+      setRequestError("Document name is required.");
+      return;
+    }
+    setCreatingRequest(true);
+    setRequestError("");
+    try {
+      await createAdditionalRequest({
+        documentId: selectedProposal.documentId,
+        label,
+        description: newRequestDescription.trim(),
+        adminId: auth.currentUser.uid,
+      });
+
+      // Best-effort email notification. Failure here should not undo the request.
+      try {
+        const submitter = selectedProposal.submittedBy
+          ? await getUserById(selectedProposal.submittedBy)
+          : null;
+        if (submitter?.email) {
+          await sendAdditionalDocRequestEmail({
+            to: submitter.email,
+            recipientName: submitter.fullName || "",
+            documentTitle: selectedProposal.title,
+            requestLabel: label,
+            requestDescription: newRequestDescription.trim(),
+            portalUrl: window.location.origin,
+          });
+        }
+      } catch (emailErr) {
+        console.error("Failed to send notification email:", emailErr);
+      }
+
+      setNewRequestLabel("");
+      setNewRequestDescription("");
+      setShowAddRequestForm(false);
+      setSuccess("Additional document request sent to the organization.");
+      await refreshSelectedProposal();
+      await loadProposals();
+    } catch (err) {
+      setRequestError(err.message || "Failed to create request.");
+    } finally {
+      setCreatingRequest(false);
+    }
+  };
+
+  const handleResolveRequest = async (requestId) => {
+    if (!selectedProposal) return;
+    setRequestBusyId(requestId);
+    setRequestError("");
+    try {
+      await resolveAdditionalRequest({
+        documentId: selectedProposal.documentId,
+        requestId,
+        adminId: auth.currentUser.uid,
+      });
+      await refreshSelectedProposal();
+    } catch (err) {
+      setRequestError(err.message || "Failed to resolve request.");
+    } finally {
+      setRequestBusyId(null);
+    }
+  };
+
+  const handleReopenRequest = async (requestId) => {
+    if (!selectedProposal) return;
+    setRequestBusyId(requestId);
+    setRequestError("");
+    try {
+      await reopenAdditionalRequest({
+        documentId: selectedProposal.documentId,
+        requestId,
+        adminId: auth.currentUser.uid,
+      });
+      await refreshSelectedProposal();
+    } catch (err) {
+      setRequestError(err.message || "Failed to reopen request.");
+    } finally {
+      setRequestBusyId(null);
+    }
+  };
+
+  const handleCancelRequest = async (requestId) => {
+    if (!selectedProposal) return;
+    if (
+      !window.confirm(
+        "Cancel this additional document request? It will be removed from the open list."
+      )
+    ) {
+      return;
+    }
+    setRequestBusyId(requestId);
+    setRequestError("");
+    try {
+      await cancelAdditionalRequest({
+        documentId: selectedProposal.documentId,
+        requestId,
+        adminId: auth.currentUser.uid,
+      });
+      await refreshSelectedProposal();
+    } catch (err) {
+      setRequestError(err.message || "Failed to cancel request.");
+    } finally {
+      setRequestBusyId(null);
+    }
   };
 
   const handleForwardToVPAA = async () => {
@@ -745,33 +1068,78 @@ const AdminActivityProposals = () => {
                         {/* SAS Review Actions */}
                         {selectedProposal.pipeline?.currentStage ===
                           "sas_review" && (
-                          <div className="sas-review-actions">
-                            <h4 className="actions-section-title">
-                              SAS Review Actions
-                            </h4>
-                            {unresolvedReviewerCount > 0 && (
-                              <div className="comment-gate-banner">
-                                ⚠ {unresolvedReviewerCount} unresolved reviewer comment{unresolvedReviewerCount === 1 ? "" : "s"}.
-                                Forwarding is blocked until they're resolved.
+                          <>
+                            <AdditionalRequestsPanel
+                              requests={additionalRequests}
+                              showAddForm={showAddRequestForm}
+                              setShowAddForm={setShowAddRequestForm}
+                              newLabel={newRequestLabel}
+                              setNewLabel={setNewRequestLabel}
+                              newDescription={newRequestDescription}
+                              setNewDescription={setNewRequestDescription}
+                              creating={creatingRequest}
+                              error={requestError}
+                              busyId={requestBusyId}
+                              onCreate={handleCreateAdditionalRequest}
+                              onResolve={handleResolveRequest}
+                              onReopen={handleReopenRequest}
+                              onCancel={handleCancelRequest}
+                              onPreview={(req) =>
+                                setPreviewFile({
+                                  fileUrl: req.file.fileUrl,
+                                  fileName: req.file.fileName,
+                                  title: req.label,
+                                  documentId: selectedProposal.documentId,
+                                  requirementKey: `additional:${req.id}`,
+                                  fileVersion: req.file.version || 1,
+                                  previousVersion: req.file.previousVersion || null,
+                                })
+                              }
+                            />
+
+                            <div className="sas-review-actions">
+                              <h4 className="actions-section-title">
+                                SAS Review Actions
+                              </h4>
+                              {unresolvedReviewerCount > 0 && (
+                                <div className="comment-gate-banner">
+                                  ⚠ {unresolvedReviewerCount} unresolved reviewer comment{unresolvedReviewerCount === 1 ? "" : "s"}.
+                                  Forwarding is blocked until they're resolved.
+                                </div>
+                              )}
+                              {openAdditionalRequestCount > 0 && (
+                                <div className="comment-gate-banner">
+                                  ⚠ {openAdditionalRequestCount} open additional document request{openAdditionalRequestCount === 1 ? "" : "s"}.
+                                  Mark each as Resolved before forwarding.
+                                </div>
+                              )}
+                              <div className="action-buttons-row">
+                                <button
+                                  className="btn-forward"
+                                  onClick={() => setShowForwardModal(true)}
+                                  disabled={
+                                    unresolvedReviewerCount > 0 ||
+                                    openAdditionalRequestCount > 0
+                                  }
+                                  title={
+                                    unresolvedReviewerCount > 0
+                                      ? "Resolve all reviewer comments first"
+                                      : openAdditionalRequestCount > 0
+                                      ? "Resolve all additional document requests first"
+                                      : ""
+                                  }
+                                >
+                                  Forward to VPAA
+                                </button>
+                                <button
+                                  className="btn-return-sas"
+                                  onClick={() => setShowReturnModal(true)}
+                                >
+                                  Return to Organization
+                                </button>
                               </div>
-                            )}
-                            <div className="action-buttons-row">
-                              <button
-                                className="btn-forward"
-                                onClick={() => setShowForwardModal(true)}
-                                disabled={unresolvedReviewerCount > 0}
-                                title={unresolvedReviewerCount > 0 ? "Resolve all reviewer comments first" : ""}
-                              >
-                                Forward to VPAA
-                              </button>
-                              <button
-                                className="btn-return-sas"
-                                onClick={() => setShowReturnModal(true)}
-                              >
-                                Return to Organization
-                              </button>
                             </div>
-                          </div>
+                          </>
                         )}
 
                         {/* SAS Release Actions */}
@@ -1070,6 +1438,12 @@ const AdminActivityProposals = () => {
             role: userData.role,
           } : null}
           viewerRole="reviewer"
+          documentStage={selectedProposal?.pipeline?.currentStage || null}
+          authorScope="sas"
+          canPost={
+            selectedProposal?.pipeline?.currentStage === "sas_review"
+            || selectedProposal?.pipeline?.currentStage === "sas_release"
+          }
           onClose={() => setPreviewFile(null)}
         />
       )}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import PdfViewer from "./PdfViewer";
 import PdfCommentLayer from "./PdfCommentLayer";
 import CommentThreadPanel from "./CommentThreadPanel";
@@ -11,6 +11,7 @@ import {
   addReply,
 } from "../../services/commentService";
 import { uploadRevision } from "../../services/documentService";
+import { canReplyOnComment } from "../../utils/commentScope";
 import "./DocumentPreviewModal.css";
 
 const PDF_EXT = ["pdf"];
@@ -38,6 +39,17 @@ export default function DocumentPreviewModal({
   fileVersion,
   previousVersion,
   onRevisionUploaded,
+  // Stage-scoped commenting — when provided, comments are tagged with `stage`
+  // and visibility/post permissions are gated by scope.
+  documentStage = null,    // pipeline.currentStage of the parent doc
+  authorScope = null,      // submitter | sas | isg | vpaa | op | fms | procurement
+  visibleStages = null,    // array of stages this viewer may see; null = all
+  canPost = true,          // whether this viewer may author new comments now
+  // Optional commentApi for token-bound contexts (e.g. ReviewPage). Shape:
+  //   { subscribe(requirementKey, onChange) -> unsubscribe,
+  //     create(payload), addReply(commentId, payload),
+  //     resolve(commentId, resolved), delete(commentId) }
+  commentApi = null,
 }) {
   const [comments, setComments] = useState([]);
   const [activeCommentId, setActiveCommentId] = useState(null);
@@ -48,7 +60,7 @@ export default function DocumentPreviewModal({
 
   const kind = fileUrl ? detectKind(fileName, fileUrl) : "other";
   const commentingEnabled =
-    kind === "pdf" && !!documentId && !!requirementKey && !!currentUser?.uid;
+    kind === "pdf" && !!documentId && !!requirementKey && (!!commentApi || !!currentUser?.uid);
 
   useEffect(() => {
     const handler = (e) => {
@@ -60,9 +72,23 @@ export default function DocumentPreviewModal({
 
   useEffect(() => {
     if (!commentingEnabled) return;
-    const unsub = subscribeToComments(documentId, requirementKey, setComments);
+    if (commentApi?.subscribe) {
+      return commentApi.subscribe(requirementKey, (items) => {
+        const filtered = visibleStages
+          ? items.filter((c) => !c.stage || visibleStages.includes(c.stage))
+          : items;
+        setComments(filtered);
+      });
+    }
+    const unsub = subscribeToComments(documentId, requirementKey, setComments, {
+      visibleStages,
+    });
     return () => unsub?.();
-  }, [commentingEnabled, documentId, requirementKey]);
+  }, [commentingEnabled, commentApi, documentId, requirementKey, visibleStages]);
+
+  const canReplyOn = useMemo(() => {
+    return (c) => canReplyOnComment(authorScope, c?.stage, documentStage);
+  }, [authorScope, documentStage]);
 
   if (!fileUrl) return null;
 
@@ -75,39 +101,64 @@ export default function DocumentPreviewModal({
 
   const handleSubmitDraft = async (text) => {
     if (!draftBox) return;
-    await createComment({
-      documentId,
-      requirementKey,
+    const payload = {
       page: draftBox.page,
       bbox: { x: draftBox.x, y: draftBox.y, w: draftBox.w, h: draftBox.h },
       text,
-      authorUid: currentUser.uid,
-      authorName: currentUser.name || currentUser.displayName || "User",
-      authorRole: currentUser.role || "",
+      authorName: currentUser?.name || currentUser?.displayName || "User",
+      authorRole: currentUser?.role || "",
       authorSide: viewerRole || "reviewer",
-    });
+      authorScope: authorScope || null,
+      stage: documentStage || null,
+    };
+    if (commentApi?.create) {
+      await commentApi.create({ requirementKey, ...payload });
+    } else {
+      await createComment({
+        documentId,
+        requirementKey,
+        ...payload,
+        authorUid: currentUser.uid,
+      });
+    }
     setDraftBox(null);
   };
 
   const handleResolveToggle = async (c) => {
-    await resolveComment(documentId, c.id, !c.resolved);
+    if (commentApi?.resolve) {
+      await commentApi.resolve(c.id, !c.resolved);
+    } else {
+      await resolveComment(documentId, c.id, !c.resolved);
+    }
   };
 
   const handleDeleteComment = async (c) => {
-    await deleteComment(documentId, c.id);
+    if (commentApi?.delete) {
+      await commentApi.delete(c.id);
+    } else {
+      await deleteComment(documentId, c.id);
+    }
     if (activeCommentId === c.id) setActiveCommentId(null);
   };
 
   const handleAddReply = async (c, text) => {
-    await addReply({
-      documentId,
-      commentId: c.id,
+    const payload = {
       text,
-      authorUid: currentUser.uid,
-      authorName: currentUser.name || currentUser.displayName || "User",
-      authorRole: currentUser.role || "",
+      authorName: currentUser?.name || currentUser?.displayName || "User",
+      authorRole: currentUser?.role || "",
       authorSide: viewerRole || "reviewer",
-    });
+      authorScope: authorScope || null,
+    };
+    if (commentApi?.addReply) {
+      await commentApi.addReply(c.id, payload);
+    } else {
+      await addReply({
+        documentId,
+        commentId: c.id,
+        ...payload,
+        authorUid: currentUser.uid,
+      });
+    }
   };
 
   const handleStartRevision = (selectedComments) => {
@@ -248,6 +299,8 @@ export default function DocumentPreviewModal({
             onSelectComment={setActiveCommentId}
             currentUser={currentUser}
             viewerRole={viewerRole}
+            canPost={canPost}
+            canReplyOn={canReplyOn}
           />
         )}
       </div>

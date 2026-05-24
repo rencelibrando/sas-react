@@ -11,6 +11,8 @@ const DashboardLayout = ({ children, currentPage = "dashboard", orgType = null }
         { id: "isg-endorsement", label: "Endorsement Queue", icon: "activity-proposals" },
         { id: "isg-distribution", label: "Distribution", icon: "dashboard" },
         { id: "activity-proposals", label: "Our Proposals", icon: "activity-proposals" },
+        { id: "equipment-borrowing", label: "Equipment Borrowing", icon: "equipment" },
+        { id: "memorandums", label: "Memorandums", icon: "documents" },
         { id: "profile", label: "Profile", icon: "profile" },
       ]
     : [
@@ -26,6 +28,7 @@ const DashboardLayout = ({ children, currentPage = "dashboard", orgType = null }
     "equipment-borrowing": "equipment-borrowing",
     "isg-endorsement": "isg-endorsement",
     "isg-distribution": "isg-distribution",
+    memorandums: "memorandums",
     profile: "profile",
   };
 

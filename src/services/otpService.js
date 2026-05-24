@@ -7,6 +7,7 @@ import {
 } from "firebase/firestore";
 import { db } from "../config/firebase";
 import { sendOTPEmail } from "./emailService";
+import { logAuthEvent } from "./authActivityLogService";
 
 /**
  * Generate a 6-digit OTP code
@@ -64,6 +65,12 @@ export const verifyOTP = async (email, inputOTP) => {
     // Check if OTP is expired
     if (expiresAt && now > expiresAt) {
       await deleteDoc(otpRef);
+      logAuthEvent({
+        type: "otp_failed",
+        email,
+        success: false,
+        errorCode: "expired",
+      });
       return false;
     }
 
@@ -71,12 +78,29 @@ export const verifyOTP = async (email, inputOTP) => {
     if (otpData.otp === inputOTP && !otpData.verified) {
       // Mark as verified and delete
       await deleteDoc(otpRef);
+      logAuthEvent({
+        type: "otp_verified",
+        email,
+        success: true,
+      });
       return true;
     }
 
+    logAuthEvent({
+      type: "otp_failed",
+      email,
+      success: false,
+      errorCode: "mismatch",
+    });
     return false;
   } catch (error) {
     console.error("Error verifying OTP:", error);
+    logAuthEvent({
+      type: "otp_failed",
+      email,
+      success: false,
+      errorCode: error?.code || "exception",
+    });
     return false;
   }
 };
@@ -97,10 +121,18 @@ export const sendOTP = async (email) => {
     // Send OTP via email
     await sendOTPEmail(email, otp);
 
+    logAuthEvent({ type: "otp_sent", email, success: true });
+
     // Return OTP for development/testing (remove in production)
     return otp;
   } catch (error) {
     console.error("Error sending OTP:", error);
+    logAuthEvent({
+      type: "otp_sent",
+      email,
+      success: false,
+      errorCode: error?.code || "send-failed",
+    });
     throw new Error("Failed to send OTP. Please try again.");
   }
 };

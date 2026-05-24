@@ -125,7 +125,8 @@ service cloud.firestore {
                       && resource.data.organizationId != null
                       && belongsToOrg(resource.data.organizationId)
                       && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-                        'files', 'revisionCount', 'dateLastRevised', 'lastUpdated'
+                        'files', 'revisionCount', 'dateLastRevised', 'lastUpdated',
+                        'additionalRequests', 'updatedBy'
                       ])
                     )
                     || (
@@ -140,6 +141,13 @@ service cloud.firestore {
 
       // ── comments subcollection ─────────────────────────────────────────
       // Inline reviewer comments anchored to a region of a PDF file.
+      //
+      // Stage-scoped privacy: on activity proposals, comment authorship is
+      // gated by who currently "owns" the stage. Only the submitter, the
+      // SAS Admin during SAS-controlled stages, and ISG during ISG-controlled
+      // stages can post new comments or append replies. Tokenized offices
+      // (VPAA/OP/FMS/Procurement) author through the backend via the Admin
+      // SDK, bypassing these rules.
       match /comments/{commentId} {
         function isOrgForParent() {
           return isOrganizationUser()
@@ -147,11 +155,40 @@ service cloud.firestore {
               && belongsToOrg(parentDoc().organizationId);
         }
 
+        function isActivityProposal() {
+          return parentDoc().documentType == 'activity_proposal';
+        }
+
+        function parentStage() {
+          return parentDoc().pipeline.currentStage;
+        }
+
+        function isSASAtSASStage() {
+          return isAdmin()
+              && parentDoc().pipeline != null
+              && (parentStage() == 'sas_review' || parentStage() == 'sas_release');
+        }
+
+        function isISGAtGatekeeperStage() {
+          return isISG()
+              && parentDoc().pipeline != null
+              && (parentStage() == 'isg_endorsement' || parentStage() == 'isg_distribution');
+        }
+
+        function canAuthorOnParent() {
+          // For activity proposals: stage-scoped. For other doc types: keep
+          // the original permissive rule (any authorized reader can author).
+          return isActivityProposal()
+            ? (isOrgForParent() || isSASAtSASStage() || isISGAtGatekeeperStage())
+            : canReadParentDoc();
+        }
+
         // Anyone authorized to read the parent document can read its comments
         allow read: if canReadParentDoc();
 
-        // Same readers can create comments; the author UID must match the caller
-        allow create: if canReadParentDoc()
+        // Author must be allowed by the stage-scoped rule and must own the
+        // authorUid they're stamping on the doc.
+        allow create: if canAuthorOnParent()
                       && request.resource.data.authorUid == request.auth.uid
                       && request.resource.data.requirementKey is string
                       && request.resource.data.text is string
@@ -160,7 +197,7 @@ service cloud.firestore {
         // Update permissions:
         //   - Admin can do anything
         //   - Comment author can edit/delete their own
-        //   - The comment author OR the requesting org may append a reply
+        //   - Any current stage-authorized author may append a reply
         //     (only `replies` field changes)
         //   - The requesting org may bulk-resolve via revision (writes `resolved` +
         //     `resolvedByRevision` together)
@@ -170,7 +207,7 @@ service cloud.firestore {
           || resource.data.authorUid == request.auth.uid
           || (
             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['replies'])
-            && isOrgForParent()
+            && canAuthorOnParent()
           )
           || (
             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['resolved', 'resolvedByRevision'])
@@ -260,6 +297,29 @@ service cloud.firestore {
     // ── otps ───────────────────────────────────────────────────────────────
     match /otps/{email} {
       allow read, write: if true;
+    }
+
+    // ── authActivityLog ────────────────────────────────────────────────────
+    // Append-only auth event log for admin visibility (logins, logouts, OTPs,
+    // password resets, account creation). Reads are admin-only. Writes are
+    // open for "create" with shape validation — some events (login_failed,
+    // otp_failed, otp_sent during forgot-password) must be writable without
+    // an authenticated session. Updates and deletes are forbidden.
+    match /authActivityLog/{entryId} {
+      allow read: if isAdmin();
+
+      allow create: if request.resource.data.type is string
+                    && request.resource.data.type in [
+                         'login_success', 'login_failed', 'logout',
+                         'google_login_success', 'google_login_failed',
+                         'otp_sent', 'otp_verified', 'otp_failed',
+                         'password_reset_success', 'password_reset_failed',
+                         'account_created'
+                       ]
+                    && request.resource.data.success is bool
+                    && request.resource.data.timestamp == request.time;
+
+      allow update, delete: if false;
     }
 
     // ── Default deny ───────────────────────────────────────────────────────

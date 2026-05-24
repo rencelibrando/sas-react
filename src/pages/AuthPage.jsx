@@ -4,6 +4,7 @@ import { auth, googleProvider } from "../config/firebase";
 import { getUserById, getUserByEmail } from "../services/userService";
 import { sendOTP, verifyOTP } from "../services/otpService";
 import { resetPasswordViaAPI } from "../services/emailService";
+import { logAuthEvent } from "../services/authActivityLogService";
 import { validatePasswordStrength } from "../utils/passwordValidation";
 import earistLogo from "../assets/images/logos/earist-logo.png";
 import sasBanner from "../assets/images/banners/sas-banner.png";
@@ -100,6 +101,14 @@ const AuthPage = () => {
         console.error("Firebase Auth Error:", authError);
         console.error("Error Code:", authError.code);
         console.error("Error Message:", authError.message);
+
+        logAuthEvent({
+          type: "login_failed",
+          email,
+          success: false,
+          errorCode: authError.code || null,
+          context: "credential-check",
+        });
         
         // Credentials are invalid - show error immediately (no OTP sent)
         let errorMessage = "Invalid email or password. Please check your credentials and try again.";
@@ -175,7 +184,14 @@ const AuthPage = () => {
       // OTP verified, proceed with authentication
       if (pendingAuth.type === "login") {
         try {
-          await signInWithEmailAndPassword(auth, pendingAuth.email, pendingAuth.password);
+          const cred = await signInWithEmailAndPassword(auth, pendingAuth.email, pendingAuth.password);
+          logAuthEvent({
+            type: "login_success",
+            email: pendingAuth.email,
+            userId: cred?.user?.uid || null,
+            success: true,
+            context: "email-password",
+          });
           // Success - reset OTP state
           isVerifyingRef.current = false;
           sessionStorage.removeItem("pendingAuth");
@@ -196,7 +212,15 @@ const AuthPage = () => {
           } else if (authError.message) {
             errorMessage = authError.message;
           }
-          
+
+          logAuthEvent({
+            type: "login_failed",
+            email: pendingAuth.email,
+            success: false,
+            errorCode: authError.code || null,
+            context: "post-otp",
+          });
+
           setError(errorMessage);
           setLoading(false);
           return;
@@ -217,21 +241,42 @@ const AuthPage = () => {
     try {
       const result = await signInWithPopup(auth, googleProvider);
       const user = result.user;
-      
+
       // Check if user exists in Firestore
       const userDoc = await getUserById(user.uid);
-      
+
       if (!userDoc) {
         // User doesn't exist - sign them out and show error
         await signOut(auth);
+        logAuthEvent({
+          type: "google_login_failed",
+          email: user?.email || null,
+          userId: user?.uid || null,
+          success: false,
+          errorCode: "no-firestore-user",
+          context: "google",
+        });
         setError("No account found. Please contact SAS office for organization account creation.");
         setLoading(false);
         return;
       }
-      
+
+      logAuthEvent({
+        type: "google_login_success",
+        email: user?.email || null,
+        userId: user?.uid || null,
+        success: true,
+        context: "google",
+      });
       // User exists, proceed with login
       // Navigation will be handled by App.jsx
     } catch (err) {
+      logAuthEvent({
+        type: "google_login_failed",
+        success: false,
+        errorCode: err?.code || null,
+        context: "google",
+      });
       setError(err.message || "Failed to sign in with Google.");
       setLoading(false);
     }
@@ -318,7 +363,24 @@ const AuthPage = () => {
         return;
       }
 
-      await resetPasswordViaAPI(forgotPasswordEmail, newPassword);
+      try {
+        await resetPasswordViaAPI(forgotPasswordEmail, newPassword);
+        logAuthEvent({
+          type: "password_reset_success",
+          email: forgotPasswordEmail,
+          success: true,
+          context: "forgot-password",
+        });
+      } catch (resetErr) {
+        logAuthEvent({
+          type: "password_reset_failed",
+          email: forgotPasswordEmail,
+          success: false,
+          errorCode: resetErr?.code || null,
+          context: "forgot-password",
+        });
+        throw resetErr;
+      }
 
       // Success - reset form and show success message
       setShowForgotPassword(false);

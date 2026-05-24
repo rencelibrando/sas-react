@@ -76,11 +76,9 @@ const AdminEquipmentRequests = () => {
   }, []);
 
   useEffect(() => {
-    const tab = TABS.find((t) => t.id === activeTab);
-    if (!tab) return;
     let cancelled = false;
     setLoading(true);
-    listRequestsForAdmin({ status: tab.status })
+    listRequestsForAdmin()
       .then((docs) => {
         if (!cancelled) setRequests(docs);
       })
@@ -94,7 +92,17 @@ const AdminEquipmentRequests = () => {
     return () => {
       cancelled = true;
     };
-  }, [activeTab, refreshKey]);
+  }, [refreshKey]);
+
+  const tabCounts = useMemo(() => {
+    const counts = {};
+    for (const t of TABS) counts[t.id] = 0;
+    for (const r of requests) {
+      const tab = TABS.find((t) => t.status === r.status);
+      if (tab) counts[tab.id] += 1;
+    }
+    return counts;
+  }, [requests]);
 
   const handleView = async (documentId) => {
     setLoadingDetail(true);
@@ -217,7 +225,11 @@ const AdminEquipmentRequests = () => {
     }));
   };
 
-  const filteredRequests = useMemo(() => requests, [requests]);
+  const filteredRequests = useMemo(() => {
+    const tab = TABS.find((t) => t.id === activeTab);
+    if (!tab) return requests;
+    return requests.filter((r) => r.status === tab.status);
+  }, [requests, activeTab]);
 
   return (
     <AdminLayout userData={userData} currentPage="equipment-requests">
@@ -236,7 +248,10 @@ const AdminEquipmentRequests = () => {
               className={`aer-tab ${activeTab === t.id ? "active" : ""}`}
               onClick={() => setActiveTab(t.id)}
             >
-              {t.label}
+              <span className="aer-tab-label">{t.label}</span>
+              {tabCounts[t.id] > 0 && (
+                <span className="aer-tab-count">{tabCounts[t.id]}</span>
+              )}
             </button>
           ))}
         </div>

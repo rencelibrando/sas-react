@@ -15,6 +15,79 @@ const STAGE_TITLES = {
   procurement_review: "Procurement Office Review",
 };
 
+const STAGE_TO_SCOPE = {
+  vpaa_review: "vpaa",
+  op_approval: "op",
+  fms_review: "fms",
+  procurement_review: "procurement",
+};
+
+// Build a commentApi that polls the tokenized comment endpoints. Used by the
+// DocumentPreviewModal so offices can comment without a portal account.
+const buildTokenCommentApi = (token) => ({
+  subscribe(requirementKey, onChange) {
+    let cancelled = false;
+    const fetchOnce = async () => {
+      try {
+        const url = `${API_BASE_URL}/api/review/${encodeURIComponent(token)}/comments?requirementKey=${encodeURIComponent(requirementKey)}`;
+        const r = await fetch(url);
+        const data = await r.json();
+        if (cancelled) return;
+        if (r.ok && data.success) onChange(data.comments || []);
+      } catch (err) {
+        if (!cancelled) console.error("token-comments poll error:", err);
+      }
+    };
+    fetchOnce();
+    const intervalId = setInterval(fetchOnce, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  },
+  async create({ requirementKey, page, bbox, text }) {
+    const r = await fetch(`${API_BASE_URL}/api/review/${encodeURIComponent(token)}/comments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requirementKey, page, bbox, text }),
+    });
+    const data = await r.json();
+    if (!r.ok || !data.success) throw new Error(data?.error || "Failed to create comment");
+  },
+  async addReply(commentId, { text }) {
+    const r = await fetch(
+      `${API_BASE_URL}/api/review/${encodeURIComponent(token)}/comments/${encodeURIComponent(commentId)}/replies`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      }
+    );
+    const data = await r.json();
+    if (!r.ok || !data.success) throw new Error(data?.error || "Failed to add reply");
+  },
+  async resolve(commentId, resolved) {
+    const r = await fetch(
+      `${API_BASE_URL}/api/review/${encodeURIComponent(token)}/comments/${encodeURIComponent(commentId)}/resolve`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resolved }),
+      }
+    );
+    const data = await r.json();
+    if (!r.ok || !data.success) throw new Error(data?.error || "Failed to update comment");
+  },
+  async delete(commentId) {
+    const r = await fetch(
+      `${API_BASE_URL}/api/review/${encodeURIComponent(token)}/comments/${encodeURIComponent(commentId)}`,
+      { method: "DELETE" }
+    );
+    const data = await r.json();
+    if (!r.ok || !data.success) throw new Error(data?.error || "Failed to delete comment");
+  },
+});
+
 const formatPreviewTimestamp = (date) => {
   try {
     return new Intl.DateTimeFormat("en-PH", {
@@ -281,6 +354,7 @@ const ReviewPage = () => {
                             fileUrl: f.fileUrl,
                             fileName: f.fileName,
                             title: REQUIREMENT_LABELS[f.requirementKey] || f.fileName,
+                            requirementKey: f.requirementKey,
                           })}
                         >
                           {REQUIREMENT_LABELS[f.requirementKey] || f.fileName}
@@ -491,12 +565,24 @@ const ReviewPage = () => {
       <footer className="review-footer">
         <p>© {new Date().getFullYear()} EARIST Student Affairs and Services</p>
       </footer>
-      {previewFile && (
+      {previewFile && review && (
         <DocumentPreviewModal
           key={previewFile.fileUrl}
           fileUrl={previewFile.fileUrl}
           fileName={previewFile.fileName}
           title={previewFile.title}
+          documentId={review.documentId}
+          requirementKey={previewFile.requirementKey}
+          documentStage={review.stage}
+          authorScope={STAGE_TO_SCOPE[review.stage] || null}
+          canPost={true}
+          visibleStages={[review.stage]}
+          currentUser={{
+            name: previewFile.officeName || STAGE_TITLES[review.stage] || "Office",
+            role: STAGE_TITLES[review.stage] || "",
+          }}
+          viewerRole="reviewer"
+          commentApi={token ? buildTokenCommentApi(token) : null}
           onClose={() => setPreviewFile(null)}
         />
       )}

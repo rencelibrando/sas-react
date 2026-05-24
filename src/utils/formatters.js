@@ -1,27 +1,34 @@
-export const formatDate = (timestamp) => {
-  if (!timestamp) return "N/A";
-  if (timestamp.toDate) {
-    return timestamp.toDate().toLocaleDateString("en-US", {
-      year: "numeric",
-      month: "short",
-      day: "numeric"
-    });
+const toDate = (value) => {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value.toDate === "function") return value.toDate();
+  if (typeof value === "number" || typeof value === "string") {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
   }
-  return "N/A";
+  return null;
+};
+
+export const formatDate = (timestamp) => {
+  const d = toDate(timestamp);
+  if (!d) return "N/A";
+  return d.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric"
+  });
 };
 
 export const formatDateTime = (timestamp) => {
-  if (!timestamp) return "N/A";
-  if (timestamp.toDate) {
-    return timestamp.toDate().toLocaleString("en-US", {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit"
-    });
-  }
-  return "N/A";
+  const d = toDate(timestamp);
+  if (!d) return "N/A";
+  return d.toLocaleString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
 };
 
 export const getStatusBadgeClass = (status) => {

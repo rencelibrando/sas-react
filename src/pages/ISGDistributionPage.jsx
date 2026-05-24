@@ -289,6 +289,10 @@ const ISGDistributionPage = () => {
             role: userData.userRole || userData.role,
           } : null}
           viewerRole="reviewer"
+          documentStage={selectedProposal?.pipeline?.currentStage || null}
+          authorScope="isg"
+          visibleStages={["isg_endorsement", "isg_distribution"]}
+          canPost={selectedProposal?.pipeline?.currentStage === "isg_distribution"}
           onClose={() => setPreviewFile(null)}
         />
       )}

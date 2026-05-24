@@ -1135,6 +1135,14 @@ export const completeSASReview = async (documentId, adminId, endorsementFile) =>
   if (data.pipeline?.currentStage !== "sas_review") {
     throw new Error("Proposal is not at the SAS review stage");
   }
+  const openRequests = (data.additionalRequests || []).filter(
+    (r) => r.status === "pending" || r.status === "uploaded"
+  );
+  if (openRequests.length > 0) {
+    throw new Error(
+      `Cannot forward — ${openRequests.length} additional document request(s) still open. Mark each as Resolved before forwarding.`
+    );
+  }
 
   // Upload endorsement letter to Storage
   const storageRef = ref(
@@ -1716,3 +1724,359 @@ export const uploadRevision = async ({
   return { fileUrl, version: newVersion };
 };
 
+// ── Additional document requests (SAS-initiated during sas_review) ──────────
+
+const ALLOWED_ADDITIONAL_TYPES = [
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "image/jpeg",
+  "image/png",
+];
+
+const validateAdditionalFile = (file) => {
+  if (!file) throw new Error("File is required");
+  if (!ALLOWED_ADDITIONAL_TYPES.includes(file.type)) {
+    throw new Error("Invalid file type. Upload a PDF, Word, or image file.");
+  }
+  if (file.size > 50 * 1024 * 1024) {
+    throw new Error("File too large. Maximum 50 MB.");
+  }
+};
+
+/**
+ * SAS admin creates a new additional-document request on a proposal.
+ * Only allowed while pipeline.currentStage === "sas_review".
+ */
+export const createAdditionalRequest = async ({
+  documentId,
+  label,
+  description,
+  adminId,
+}) => {
+  if (!documentId || !adminId) throw new Error("documentId and adminId are required");
+  if (!label?.trim()) throw new Error("Document label is required");
+
+  const docRef = doc(db, "documents", documentId);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) throw new Error("Proposal not found");
+  const data = snap.data();
+  if (data.pipeline?.currentStage !== "sas_review") {
+    throw new Error("Additional documents can only be requested during SAS review");
+  }
+
+  const requestId = doc(collection(db, "documents")).id;
+  const now = Timestamp.fromDate(new Date());
+  const entry = {
+    id: requestId,
+    label: label.trim(),
+    description: description?.trim() || "",
+    status: "pending",
+    requestedBy: adminId,
+    requestedAt: now,
+  };
+
+  const batch = writeBatch(db);
+  batch.update(docRef, {
+    additionalRequests: [...(data.additionalRequests || []), entry],
+    lastUpdated: serverTimestamp(),
+    updatedBy: adminId,
+  });
+
+  const histRef = doc(collection(db, "documentStatusHistory"));
+  batch.set(histRef, {
+    documentId,
+    status: data.status || "pending",
+    previousStatus: data.status || "pending",
+    changedBy: adminId,
+    remarks: `SAS requested additional document: ${label.trim()}`,
+    timestamp: serverTimestamp(),
+  });
+
+  await batch.commit();
+  return { requestId, request: entry };
+};
+
+/**
+ * Org / ISG submitter uploads (or revises) the file for an additional request.
+ * Re-uploading on a request that already has a file archives the prior version
+ * into `previousVersion` (cap at 1 prior, mirroring uploadRevision).
+ */
+export const uploadAdditionalDocument = async ({
+  documentId,
+  requestId,
+  file,
+  userId,
+}) => {
+  if (!documentId || !requestId || !userId) {
+    throw new Error("documentId, requestId, and userId are required");
+  }
+  validateAdditionalFile(file);
+
+  const docRef = doc(db, "documents", documentId);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) throw new Error("Proposal not found");
+  const data = snap.data();
+
+  if (data.organizationId) {
+    const user = await getUserById(userId);
+    if (!user || user.organizationId !== data.organizationId) {
+      throw new Error("Only members of the requesting organization may upload");
+    }
+  }
+
+  const requests = Array.isArray(data.additionalRequests)
+    ? [...data.additionalRequests]
+    : [];
+  const idx = requests.findIndex((r) => r.id === requestId);
+  if (idx === -1) throw new Error("Request not found");
+  const current = requests[idx];
+  if (current.status === "resolved" || current.status === "cancelled") {
+    throw new Error("This request is closed and no longer accepts uploads");
+  }
+
+  const currentVersion = current.file?.version || 0;
+  const newVersion = currentVersion + 1;
+
+  const storageRef = ref(
+    storage,
+    `documents/${documentId}/additional/${requestId}/v${newVersion}_${file.name}`
+  );
+  const snapshot = await uploadBytes(storageRef, file, {
+    contentType: file.type,
+    customMetadata: {
+      uploadedBy: userId,
+      originalFileName: file.name,
+      documentId,
+      additionalRequestId: requestId,
+      version: String(newVersion),
+    },
+  });
+  const fileUrl = await getDownloadURL(snapshot.ref);
+  const uploadedAt = Timestamp.fromDate(new Date());
+
+  const previousVersion = current.file
+    ? {
+        fileUrl: current.file.fileUrl,
+        fileName: current.file.fileName,
+        fileSize: current.file.fileSize || null,
+        uploadedAt: current.file.uploadedAt || null,
+        uploadedBy: current.file.uploadedBy || null,
+        version: currentVersion,
+      }
+    : null;
+
+  requests[idx] = {
+    ...current,
+    status: "uploaded",
+    file: {
+      fileUrl,
+      fileName: file.name,
+      fileSize: file.size,
+      uploadedAt,
+      uploadedBy: userId,
+      version: newVersion,
+      ...(previousVersion ? { previousVersion } : {}),
+    },
+    lastUploadedAt: uploadedAt,
+  };
+
+  const batch = writeBatch(db);
+  batch.update(docRef, {
+    additionalRequests: requests,
+    lastUpdated: serverTimestamp(),
+    updatedBy: userId,
+  });
+
+  const histRef = doc(collection(db, "documentStatusHistory"));
+  batch.set(histRef, {
+    documentId,
+    status: data.status || "pending",
+    previousStatus: data.status || "pending",
+    changedBy: userId,
+    remarks:
+      newVersion === 1
+        ? `Uploaded additional document: ${current.label}`
+        : `Revised additional document (v${newVersion}): ${current.label}`,
+    timestamp: serverTimestamp(),
+  });
+
+  await batch.commit();
+  return { fileUrl, version: newVersion };
+};
+
+/**
+ * SAS marks an additional request as Resolved. A request can be resolved even
+ * if the org never uploaded — e.g. SAS got verbal clarification and no longer
+ * needs the document. This is what unblocks Forward-to-VPAA.
+ */
+export const resolveAdditionalRequest = async ({
+  documentId,
+  requestId,
+  adminId,
+  note,
+}) => {
+  if (!documentId || !requestId || !adminId) {
+    throw new Error("documentId, requestId, and adminId are required");
+  }
+
+  const docRef = doc(db, "documents", documentId);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) throw new Error("Proposal not found");
+  const data = snap.data();
+  if (data.pipeline?.currentStage !== "sas_review") {
+    throw new Error("Requests can only be resolved during SAS review");
+  }
+
+  const requests = Array.isArray(data.additionalRequests)
+    ? [...data.additionalRequests]
+    : [];
+  const idx = requests.findIndex((r) => r.id === requestId);
+  if (idx === -1) throw new Error("Request not found");
+  const current = requests[idx];
+  if (current.status === "resolved" || current.status === "cancelled") return;
+
+  const now = Timestamp.fromDate(new Date());
+  requests[idx] = {
+    ...current,
+    status: "resolved",
+    resolvedBy: adminId,
+    resolvedAt: now,
+    resolveNote: note?.trim() || "",
+  };
+
+  const batch = writeBatch(db);
+  batch.update(docRef, {
+    additionalRequests: requests,
+    lastUpdated: serverTimestamp(),
+    updatedBy: adminId,
+  });
+
+  const histRef = doc(collection(db, "documentStatusHistory"));
+  batch.set(histRef, {
+    documentId,
+    status: data.status || "pending",
+    previousStatus: data.status || "pending",
+    changedBy: adminId,
+    remarks: `Resolved additional document request: ${current.label}${
+      note ? ` — ${note.trim()}` : ""
+    }`,
+    timestamp: serverTimestamp(),
+  });
+
+  await batch.commit();
+};
+
+/**
+ * SAS reopens a previously resolved request (in case they change their mind
+ * before forwarding).
+ */
+export const reopenAdditionalRequest = async ({
+  documentId,
+  requestId,
+  adminId,
+}) => {
+  if (!documentId || !requestId || !adminId) {
+    throw new Error("documentId, requestId, and adminId are required");
+  }
+
+  const docRef = doc(db, "documents", documentId);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) throw new Error("Proposal not found");
+  const data = snap.data();
+  if (data.pipeline?.currentStage !== "sas_review") {
+    throw new Error("Requests can only be reopened during SAS review");
+  }
+
+  const requests = Array.isArray(data.additionalRequests)
+    ? [...data.additionalRequests]
+    : [];
+  const idx = requests.findIndex((r) => r.id === requestId);
+  if (idx === -1) throw new Error("Request not found");
+  const current = requests[idx];
+
+  // Restore status based on whether a file exists.
+  const nextStatus = current.file ? "uploaded" : "pending";
+  requests[idx] = {
+    ...current,
+    status: nextStatus,
+    resolvedBy: null,
+    resolvedAt: null,
+    resolveNote: "",
+  };
+
+  const batch = writeBatch(db);
+  batch.update(docRef, {
+    additionalRequests: requests,
+    lastUpdated: serverTimestamp(),
+    updatedBy: adminId,
+  });
+
+  const histRef = doc(collection(db, "documentStatusHistory"));
+  batch.set(histRef, {
+    documentId,
+    status: data.status || "pending",
+    previousStatus: data.status || "pending",
+    changedBy: adminId,
+    remarks: `Reopened additional document request: ${current.label}`,
+    timestamp: serverTimestamp(),
+  });
+
+  await batch.commit();
+};
+
+/**
+ * SAS cancels an additional request entirely (removes it from the open list).
+ * Cancelled requests don't block forwarding.
+ */
+export const cancelAdditionalRequest = async ({
+  documentId,
+  requestId,
+  adminId,
+}) => {
+  if (!documentId || !requestId || !adminId) {
+    throw new Error("documentId, requestId, and adminId are required");
+  }
+
+  const docRef = doc(db, "documents", documentId);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) throw new Error("Proposal not found");
+  const data = snap.data();
+  if (data.pipeline?.currentStage !== "sas_review") {
+    throw new Error("Requests can only be cancelled during SAS review");
+  }
+
+  const requests = Array.isArray(data.additionalRequests)
+    ? [...data.additionalRequests]
+    : [];
+  const idx = requests.findIndex((r) => r.id === requestId);
+  if (idx === -1) throw new Error("Request not found");
+  const current = requests[idx];
+
+  const now = Timestamp.fromDate(new Date());
+  requests[idx] = {
+    ...current,
+    status: "cancelled",
+    cancelledBy: adminId,
+    cancelledAt: now,
+  };
+
+  const batch = writeBatch(db);
+  batch.update(docRef, {
+    additionalRequests: requests,
+    lastUpdated: serverTimestamp(),
+    updatedBy: adminId,
+  });
+
+  const histRef = doc(collection(db, "documentStatusHistory"));
+  batch.set(histRef, {
+    documentId,
+    status: data.status || "pending",
+    previousStatus: data.status || "pending",
+    changedBy: adminId,
+    remarks: `Cancelled additional document request: ${current.label}`,
+    timestamp: serverTimestamp(),
+  });
+
+  await batch.commit();
+};

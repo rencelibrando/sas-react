@@ -2,82 +2,13 @@ import {
   collection,
   doc,
   getDocs,
-  query,
-  where,
   updateDoc,
-  serverTimestamp,
-  orderBy
+  serverTimestamp
 } from "firebase/firestore";
 import { db } from "../config/firebase";
 
 /**
- * Get all users with pending verification
- */
-export const getPendingVerifications = async () => {
-  try {
-    const usersRef = collection(db, "users");
-    let q;
-    try {
-      q = query(
-        usersRef,
-        where("verificationStatus", "==", "pending"),
-        orderBy("dateCreated", "desc")
-      );
-    } catch (indexError) {
-      console.warn("Firestore index missing, using simple query:", indexError);
-      q = query(usersRef, where("verificationStatus", "==", "pending"));
-    }
-
-    const querySnapshot = await getDocs(q);
-    const users = [];
-
-    querySnapshot.forEach((doc) => {
-      users.push({
-        userId: doc.id,
-        ...doc.data()
-      });
-    });
-
-    if (users.length > 0 && users[0].dateCreated) {
-      users.sort((a, b) => {
-        const aDate = a.dateCreated?.toDate?.() || new Date(0);
-        const bDate = b.dateCreated?.toDate?.() || new Date(0);
-        return bDate - aDate;
-      });
-    }
-
-    return users;
-  } catch (error) {
-    console.error("Error fetching pending verifications:", error);
-    return [];
-  }
-};
-
-/**
- * Update user verification status
- */
-export const updateVerificationStatus = async (userId, status, rejectionReason = null) => {
-  try {
-    const userRef = doc(db, "users", userId);
-    const updateData = {
-      verificationStatus: status,
-      lastUpdated: serverTimestamp()
-    };
-
-    if (status === "rejected" && rejectionReason) {
-      updateData.rejectionReason = rejectionReason;
-    }
-
-    await updateDoc(userRef, updateData);
-    console.log(`User ${userId} verification status updated to ${status}`);
-  } catch (error) {
-    console.error("Error updating verification status:", error);
-    throw error;
-  }
-};
-
-/**
- * Get dashboard statistics (scoped to proposals + incoming docs + verifications)
+ * Get dashboard statistics (proposals + incoming docs + account counts)
  */
 export const getDashboardStats = async () => {
   try {
@@ -91,8 +22,6 @@ export const getDashboardStats = async () => {
 
     const stats = {
       totalUsers: allUsers.length,
-      pendingVerifications: allUsers.filter(u => u.verificationStatus === "pending").length,
-      verifiedUsers: allUsers.filter(u => u.verificationStatus === "verified").length,
       adminUsers: allUsers.filter(u => u.role === "Admin").length
     };
 

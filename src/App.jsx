@@ -11,10 +11,13 @@ import AdminProfilePage from "./pages/AdminProfilePage";
 import AdminAccountManagement from "./pages/AdminAccountManagement";
 import AdminEquipmentInventory from "./pages/AdminEquipmentInventory";
 import AdminEquipmentRequests from "./pages/AdminEquipmentRequests";
+import AdminActivityLog from "./pages/AdminActivityLog";
+import AdminMemorandums from "./pages/AdminMemorandums";
 import EquipmentBorrowingPage from "./pages/EquipmentBorrowingPage";
 import ActivityProposalsPage from "./pages/ActivityProposalsPage";
 import ISGEndorsementPage from "./pages/ISGEndorsementPage";
 import ISGDistributionPage from "./pages/ISGDistributionPage";
+import MemorandumsPage from "./pages/MemorandumsPage";
 import ProfilePage from "./pages/ProfilePage";
 import ReviewPage from "./pages/ReviewPage";
 import LoadingScreen from "./components/LoadingScreen";
@@ -172,6 +175,12 @@ function App() {
       case "profile":
         pageElement = <AdminProfilePage />;
         break;
+      case "activity-log":
+        pageElement = <AdminActivityLog />;
+        break;
+      case "memorandums":
+        pageElement = <AdminMemorandums />;
+        break;
       case "dashboard":
       default:
         pageElement = <AdminDashboard />;
@@ -196,6 +205,9 @@ function App() {
         break;
       case "isg-distribution":
         pageElement = <ISGDistributionPage />;
+        break;
+      case "memorandums":
+        pageElement = <MemorandumsPage />;
         break;
       case "profile":
         pageElement = <ProfilePage />;

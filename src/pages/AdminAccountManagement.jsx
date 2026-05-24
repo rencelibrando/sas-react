@@ -10,6 +10,7 @@ import {
 import { getAllOrganizations } from "../services/organizationService";
 import { updateUserStatus } from "../services/adminService";
 import { getAllOfficeProfiles, upsertOfficeProfile } from "../services/officeService";
+import { logAuthEvent } from "../services/authActivityLogService";
 import AdminLayout from "../components/admin/AdminLayout";
 import LoadingScreen from "../components/LoadingScreen";
 import { generateSecurePassword } from "../utils/passwordGenerator";
@@ -323,6 +324,14 @@ const AdminAccountManagement = () => {
           }),
         });
       }
+
+      logAuthEvent({
+        type: "account_created",
+        email: email.trim(),
+        userId: createData.uid,
+        success: true,
+        context: accountCategory === "admin" ? "admin-create-admin" : "admin-create-org",
+      });
 
       setSuccessMessage(`Account created successfully for ${fullName.trim()}.`);
       setShowCreateModal(false);

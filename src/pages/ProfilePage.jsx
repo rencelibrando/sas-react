@@ -3,6 +3,7 @@ import { auth } from "../config/firebase";
 import { signOut } from "firebase/auth";
 import { getUserById, updateUserPassword, updateUserEmail, deleteUserAccount } from "../services/userService";
 import { getOrganizationById } from "../services/organizationService";
+import { logAuthEvent } from "../services/authActivityLogService";
 import Navbar from "../components/Navbar";
 import DashboardLayout from "../components/DashboardLayout";
 import LoadingScreen from "../components/LoadingScreen";
@@ -127,6 +128,14 @@ const ProfilePage = () => {
 
   const handleLogout = async () => {
     try {
+      const current = auth.currentUser;
+      await logAuthEvent({
+        type: "logout",
+        email: current?.email || null,
+        userId: current?.uid || null,
+        success: true,
+        context: "profile-page",
+      });
       await signOut(auth);
       // User will be redirected by auth state change
     } catch (error) {
@@ -140,9 +149,18 @@ const ProfilePage = () => {
     setDeletingAccount(true);
 
     try {
+      const current = auth.currentUser;
       // Delete user account
       await deleteUserAccount();
-      
+
+      await logAuthEvent({
+        type: "logout",
+        email: current?.email || null,
+        userId: current?.uid || null,
+        success: true,
+        context: "account-deletion",
+      });
+
       // Sign out after deletion
       await signOut(auth);
       // User will be redirected by auth state change

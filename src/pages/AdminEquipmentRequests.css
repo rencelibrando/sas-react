@@ -37,10 +37,33 @@
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.aer-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  height: 1.25rem;
+  padding: 0 0.45rem;
+  border-radius: 999px;
+  background: var(--gray-light);
+  color: var(--gray-dark);
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .aer-tab:hover {
   border-color: var(--earist-maroon);
+  color: var(--earist-maroon);
+}
+
+.aer-tab:hover:not(.active) .aer-tab-count {
+  background: var(--earist-cream-dark);
   color: var(--earist-maroon);
 }
 
@@ -49,6 +72,11 @@
   border-color: var(--earist-maroon);
   color: var(--white);
   font-weight: 600;
+}
+
+.aer-tab.active .aer-tab-count {
+  background: var(--white);
+  color: var(--earist-maroon);
 }
 
 .aer-table-wrapper {

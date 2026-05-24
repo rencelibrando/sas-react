@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { signOut } from "firebase/auth";
 import { auth } from "../config/firebase";
+import { logAuthEvent } from "../services/authActivityLogService";
 import Icon from "./Icon";
 import sasLogo from "../assets/images/logos/sas-logo.png";
 import "../styles/colors.css";
@@ -23,6 +24,14 @@ const Navbar = () => {
 
   const handleLogout = async () => {
     try {
+      const current = auth.currentUser;
+      await logAuthEvent({
+        type: "logout",
+        email: current?.email || null,
+        userId: current?.uid || null,
+        success: true,
+        context: "user-navbar",
+      });
       await signOut(auth);
     } catch (error) {
       console.error("Error signing out:", error);

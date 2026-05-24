@@ -508,6 +508,114 @@ const buildReviewLinkMail = ({ to, documentTitle, reviewUrl, officeName }) => ({
   `,
 });
 
+const buildAdditionalDocRequestMail = ({
+  to,
+  recipientName,
+  documentTitle,
+  requestLabel,
+  requestDescription,
+  portalUrl,
+}) => ({
+  from: 'sas.webapp.portal@gmail.com',
+  to,
+  subject: `EARIST SAS Portal - Additional Document Requested`,
+  html: `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background-color: #800020; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+        .header h2 { margin: 0; font-size: 1.4rem; }
+        .content { background-color: #f5f5dc; padding: 30px; border-radius: 0 0 8px 8px; }
+        .doc-title { font-size: 1.05rem; font-weight: bold; color: #800020; margin: 12px 0; }
+        .request-card {
+          background: #fff;
+          border-left: 4px solid #800020;
+          padding: 14px 16px;
+          margin: 16px 0;
+          border-radius: 4px;
+        }
+        .request-label { font-weight: bold; color: #800020; margin: 0 0 6px; }
+        .request-desc { margin: 0; color: #333; white-space: pre-wrap; }
+        .portal-button {
+          display: inline-block;
+          background-color: #800020;
+          color: white;
+          padding: 14px 32px;
+          border-radius: 8px;
+          text-decoration: none;
+          font-weight: bold;
+          margin: 20px 0;
+        }
+        .footer { text-align: center; color: #888; font-size: 12px; margin-top: 24px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h2>EARIST SAS Portal</h2>
+          <p style="margin:4px 0 0">Additional Document Requested</p>
+        </div>
+        <div class="content">
+          <p>Good day${recipientName ? `, ${recipientName}` : ''},</p>
+          <p>The Student Affairs Services (SAS) office requires an additional document for your activity proposal:</p>
+          <p class="doc-title">${documentTitle || 'Activity Proposal'}</p>
+          <div class="request-card">
+            <p class="request-label">${requestLabel}</p>
+            ${requestDescription ? `<p class="request-desc">${requestDescription}</p>` : ''}
+          </div>
+          <p>Please sign in to the SAS Portal to upload the requested document.</p>
+          <div style="text-align:center">
+            <a href="${portalUrl}" class="portal-button" style="color:#ffffff !important; background-color:#800020; display:inline-block; padding:14px 32px; border-radius:8px; text-decoration:none; font-weight:bold;">
+              <span style="color:#ffffff !important;">Open SAS Portal</span>
+            </a>
+          </div>
+        </div>
+        <div class="footer">
+          <p>This is an automated message from EARIST SAS Portal.</p>
+          <p>© ${new Date().getFullYear()} EARIST Student Affairs Services. All rights reserved.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `,
+});
+
+// Notify org/ISG that SAS has requested an additional document
+app.post('/api/send-additional-doc-request', async (req, res) => {
+  try {
+    const { to, recipientName, documentTitle, requestLabel, requestDescription, portalUrl } = req.body;
+    if (!to || !requestLabel) {
+      return res.status(400).json({
+        success: false,
+        error: 'Recipient email and request label are required',
+      });
+    }
+    await transporter.sendMail(
+      buildAdditionalDocRequestMail({
+        to,
+        recipientName,
+        documentTitle,
+        requestLabel,
+        requestDescription,
+        portalUrl: portalUrl || 'http://localhost:5173',
+      })
+    );
+    console.log(`Additional doc request notification sent to ${to}`);
+    res.json({ success: true, message: 'Notification sent successfully' });
+  } catch (error) {
+    console.error('Error sending additional doc request email:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to send notification email',
+      details: error.message,
+    });
+  }
+});
+
 // Send tokenized review link to VPAA or OP
 app.post('/api/send-review-link', async (req, res) => {
   try {
@@ -1176,6 +1284,185 @@ app.post('/api/review/:token/decision', async (req, res) => {
   } catch (error) {
     console.error('Error submitting review decision:', error);
     res.status(500).json({ success: false, error: 'Failed to submit decision', details: error.message });
+  }
+});
+
+// ── Tokenized comment endpoints ─────────────────────────────────────────────
+// Offices (VPAA, OP, FMS, Procurement) have no portal accounts but still need to
+// discuss specific concerns on the proposal documents. We expose comment CRUD
+// behind the same review token so they can author comments scoped to their
+// stage, and we never let them see comments belonging to other stages.
+
+const requireActiveReviewContext = async (req, res) => {
+  const ctx = await validateReviewTokenForRequest(req, res);
+  if (!ctx) return null;
+  const { tokenData, db } = ctx;
+  const docSnap = await db.collection('documents').doc(tokenData.documentId).get();
+  if (!docSnap.exists) {
+    res.status(404).json({ success: false, error: 'Proposal not found' });
+    return null;
+  }
+  const docData = docSnap.data();
+  if (docData.pipeline?.currentStage !== tokenData.stage) {
+    res.status(409).json({ success: false, error: 'Proposal is no longer at this review stage.' });
+    return null;
+  }
+  return { ...ctx, docData };
+};
+
+const commentScopeForStage = (stage) => STAGE_TO_OFFICE_ID[stage] || null;
+
+app.get('/api/review/:token/comments', async (req, res) => {
+  try {
+    const ctx = await requireActiveReviewContext(req, res);
+    if (!ctx) return;
+    const { db, tokenData } = ctx;
+    const { requirementKey } = req.query;
+    if (!requirementKey) {
+      return res.status(400).json({ success: false, error: 'requirementKey query param is required' });
+    }
+    const snap = await db
+      .collection('documents').doc(tokenData.documentId)
+      .collection('comments')
+      .where('requirementKey', '==', requirementKey)
+      .get();
+    const comments = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      // Only expose comments that belong to this office's stage. Legacy comments
+      // (no `stage` field) belong to whoever the document was submitted to, so
+      // by default we do NOT show them to tokenized offices — they're treated
+      // as private to the portal-side participants.
+      .filter((c) => c.stage === tokenData.stage)
+      .sort((a, b) => {
+        const ta = a.createdAt?.toMillis?.() || 0;
+        const tb = b.createdAt?.toMillis?.() || 0;
+        return ta - tb;
+      });
+    res.json({ success: true, comments });
+  } catch (error) {
+    console.error('Error listing review comments:', error);
+    res.status(500).json({ success: false, error: 'Failed to list comments', details: error.message });
+  }
+});
+
+app.post('/api/review/:token/comments', async (req, res) => {
+  try {
+    const ctx = await requireActiveReviewContext(req, res);
+    if (!ctx) return;
+    const { db, tokenData, officeProfile } = ctx;
+    const { requirementKey, page, bbox, text } = req.body || {};
+    if (!requirementKey || !text?.trim()) {
+      return res.status(400).json({ success: false, error: 'requirementKey and non-empty text are required' });
+    }
+    const scope = commentScopeForStage(tokenData.stage);
+    const docRef = db.collection('documents').doc(tokenData.documentId);
+    const result = await docRef.collection('comments').add({
+      requirementKey,
+      page: typeof page === 'number' ? page : null,
+      bbox: bbox || null,
+      text: String(text).trim(),
+      authorUid: null,
+      authorName: officeProfile?.name || defaultOfficeName(tokenData.stage),
+      authorRole: officeProfile?.role || stageOfficeLabel(tokenData.stage),
+      authorSide: 'reviewer',
+      authorScope: scope,
+      stage: tokenData.stage,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      resolved: false,
+    });
+    res.json({ success: true, commentId: result.id });
+  } catch (error) {
+    console.error('Error creating review comment:', error);
+    res.status(500).json({ success: false, error: 'Failed to create comment', details: error.message });
+  }
+});
+
+app.post('/api/review/:token/comments/:commentId/replies', async (req, res) => {
+  try {
+    const ctx = await requireActiveReviewContext(req, res);
+    if (!ctx) return;
+    const { db, tokenData, officeProfile } = ctx;
+    const { commentId } = req.params;
+    const { text } = req.body || {};
+    if (!text?.trim()) {
+      return res.status(400).json({ success: false, error: 'Reply text is required' });
+    }
+    const Timestamp = admin.firestore.Timestamp;
+    const commentRef = db.collection('documents').doc(tokenData.documentId)
+      .collection('comments').doc(commentId);
+    const commentSnap = await commentRef.get();
+    if (!commentSnap.exists) {
+      return res.status(404).json({ success: false, error: 'Comment not found' });
+    }
+    const commentData = commentSnap.data();
+    if (commentData.stage && commentData.stage !== tokenData.stage) {
+      return res.status(403).json({ success: false, error: 'You cannot reply to a comment that belongs to a different stage.' });
+    }
+    const scope = commentScopeForStage(tokenData.stage);
+    await commentRef.update({
+      replies: admin.firestore.FieldValue.arrayUnion({
+        text: String(text).trim(),
+        authorUid: null,
+        authorName: officeProfile?.name || defaultOfficeName(tokenData.stage),
+        authorRole: officeProfile?.role || stageOfficeLabel(tokenData.stage),
+        authorSide: 'reviewer',
+        authorScope: scope,
+        createdAt: Timestamp.now(),
+      }),
+    });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error adding review comment reply:', error);
+    res.status(500).json({ success: false, error: 'Failed to add reply', details: error.message });
+  }
+});
+
+app.post('/api/review/:token/comments/:commentId/resolve', async (req, res) => {
+  try {
+    const ctx = await requireActiveReviewContext(req, res);
+    if (!ctx) return;
+    const { db, tokenData } = ctx;
+    const { commentId } = req.params;
+    const { resolved } = req.body || {};
+    const commentRef = db.collection('documents').doc(tokenData.documentId)
+      .collection('comments').doc(commentId);
+    const commentSnap = await commentRef.get();
+    if (!commentSnap.exists) {
+      return res.status(404).json({ success: false, error: 'Comment not found' });
+    }
+    const commentData = commentSnap.data();
+    if (commentData.stage && commentData.stage !== tokenData.stage) {
+      return res.status(403).json({ success: false, error: 'You cannot resolve a comment that belongs to a different stage.' });
+    }
+    await commentRef.update({ resolved: !!resolved });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error resolving review comment:', error);
+    res.status(500).json({ success: false, error: 'Failed to resolve comment', details: error.message });
+  }
+});
+
+app.delete('/api/review/:token/comments/:commentId', async (req, res) => {
+  try {
+    const ctx = await requireActiveReviewContext(req, res);
+    if (!ctx) return;
+    const { db, tokenData, officeId } = ctx;
+    const { commentId } = req.params;
+    const commentRef = db.collection('documents').doc(tokenData.documentId)
+      .collection('comments').doc(commentId);
+    const commentSnap = await commentRef.get();
+    if (!commentSnap.exists) {
+      return res.status(404).json({ success: false, error: 'Comment not found' });
+    }
+    const commentData = commentSnap.data();
+    if (commentData.authorScope !== officeId || commentData.stage !== tokenData.stage) {
+      return res.status(403).json({ success: false, error: 'You can only delete comments you authored at this stage.' });
+    }
+    await commentRef.delete();
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting review comment:', error);
+    res.status(500).json({ success: false, error: 'Failed to delete comment', details: error.message });
   }
 });
 

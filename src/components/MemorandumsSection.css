@@ -1,0 +1,174 @@
+.memorandums-section {
+  margin-top: 0;
+}
+
+.memorandums-section-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.memorandums-section-title {
+  color: var(--earist-maroon);
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.memorandums-section-count {
+  background: var(--earist-maroon);
+  color: var(--white);
+  border-radius: 999px;
+  padding: 0.15rem 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.memorandums-loading,
+.memorandums-error {
+  text-align: center;
+  padding: 2rem;
+  color: var(--gray);
+}
+
+.memorandums-error {
+  color: #721c24;
+}
+
+.memorandums-empty {
+  text-align: center;
+  padding: 4rem 2rem;
+  background: var(--white);
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.memorandums-empty-icon {
+  font-size: 4rem;
+  margin-bottom: 1rem;
+}
+
+.memorandums-empty-message {
+  color: var(--earist-maroon);
+  font-size: 1.2rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.memorandums-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+  gap: 1.5rem;
+}
+
+.memorandum-card {
+  background: var(--white);
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.memorandum-card:hover,
+.memorandum-card:focus-visible {
+  transform: translateY(-4px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  outline: none;
+}
+
+.memorandum-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--earist-cream-dark);
+}
+
+.memorandum-type-badge {
+  padding: 0.5rem 1rem;
+  background: var(--earist-maroon);
+  color: var(--white);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.memorandum-number {
+  color: var(--gray);
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.memorandum-title {
+  color: var(--earist-maroon);
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0 0 1rem 0;
+  line-height: 1.4;
+}
+
+.memorandum-description {
+  color: var(--gray-dark);
+  font-size: 0.95rem;
+  line-height: 1.6;
+  margin: 0 0 1rem 0;
+  flex: 1;
+}
+
+.memorandum-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 1rem;
+  border-top: 1px solid var(--earist-cream-light);
+  margin-top: auto;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.memorandum-date {
+  color: var(--gray);
+  font-size: 0.85rem;
+}
+
+.memorandum-download-btn {
+  padding: 0.5rem 1rem;
+  background: var(--earist-cream-light);
+  color: var(--earist-maroon);
+  border: 1px solid var(--earist-cream-dark);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: all 0.3s ease;
+  display: inline-block;
+}
+
+.memorandum-download-btn:hover {
+  background: var(--earist-maroon);
+  color: var(--white);
+  border-color: var(--earist-maroon);
+}
+
+@media (max-width: 768px) {
+  .memorandums-list {
+    grid-template-columns: 1fr;
+  }
+
+  .memorandum-card-footer {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .memorandum-download-btn {
+    width: 100%;
+    text-align: center;
+  }
+}
