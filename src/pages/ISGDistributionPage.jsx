@@ -91,7 +91,16 @@ const ISGDistributionPage = () => {
     return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
   };
 
-  if (loading) return <LoadingScreen />;
+  if (loading) {
+    return (
+      <div className="home-container">
+        <Navbar />
+        <DashboardLayout currentPage="isg-distribution" orgType="ISG">
+          <LoadingScreen compact={true} />
+        </DashboardLayout>
+      </div>
+    );
+  }
 
   return (
     <div className="home-container">

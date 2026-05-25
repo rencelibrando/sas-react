@@ -21,6 +21,8 @@ const ProposalSubmission = ({ onSuccess, onCancel, organizationId, orgType }) =>
   const isISG = isISGSubmitter(orgType);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [activityDate, setActivityDate] = useState("");
+  const [activityEndDate, setActivityEndDate] = useState("");
   const [proposalFlags, setProposalFlags] = useState({
     hasSpeakers: false,
     collectsFees: false,
@@ -33,7 +35,7 @@ const ProposalSubmission = ({ onSuccess, onCancel, organizationId, orgType }) =>
   const requiredKeys = getRequiredKeys(proposalFlags, { isISG });
   const uploadedCount = requiredKeys.filter((k) => uploadedFiles[k]).length;
   const isComplete =
-    uploadedCount === requiredKeys.length && title.trim();
+    uploadedCount === requiredKeys.length && title.trim() && activityDate;
 
   const handleFlagChange = (flag) => {
     const next = { ...proposalFlags, [flag]: !proposalFlags[flag] };
@@ -85,6 +87,14 @@ const ProposalSubmission = ({ onSuccess, onCancel, organizationId, orgType }) =>
       setError("Please enter a proposal title.");
       return;
     }
+    if (!activityDate) {
+      setError("Please select the activity date.");
+      return;
+    }
+    if (activityEndDate && activityEndDate < activityDate) {
+      setError("Activity end date cannot be earlier than the start date.");
+      return;
+    }
     if (uploadedCount < requiredKeys.length) {
       setError(
         `Please upload all required documents. ${uploadedCount} of ${requiredKeys.length} uploaded.`
@@ -106,6 +116,8 @@ const ProposalSubmission = ({ onSuccess, onCancel, organizationId, orgType }) =>
         {
           title,
           description,
+          activityDate,
+          activityEndDate: activityEndDate || null,
           proposalFlags,
           submitterRole: orgType || null,
         },
@@ -176,6 +188,42 @@ const ProposalSubmission = ({ onSuccess, onCancel, organizationId, orgType }) =>
             <span className="form-hint">
               {description.length}/1000 characters
             </span>
+          </div>
+
+          <div className="form-group form-group--row">
+            <div className="form-group" style={{ flex: 1 }}>
+              <label htmlFor="activityDate" className="form-label">
+                Activity Date <span className="required">*</span>
+              </label>
+              <input
+                type="date"
+                id="activityDate"
+                className="form-input"
+                value={activityDate}
+                onChange={(e) => setActivityDate(e.target.value)}
+                disabled={loading}
+              />
+              <span className="form-hint">
+                Used to schedule post-activity report deadlines.
+              </span>
+            </div>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label htmlFor="activityEndDate" className="form-label">
+                Activity End Date
+              </label>
+              <input
+                type="date"
+                id="activityEndDate"
+                className="form-input"
+                value={activityEndDate}
+                onChange={(e) => setActivityEndDate(e.target.value)}
+                min={activityDate || undefined}
+                disabled={loading}
+              />
+              <span className="form-hint">
+                Optional — leave blank for single-day events.
+              </span>
+            </div>
           </div>
 
         </div>

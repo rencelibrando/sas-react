@@ -8,10 +8,14 @@ import MemorandumsSection from "../components/MemorandumsSection";
 import "../styles/colors.css";
 import "./MemorandumsPage.css";
 
-const MemorandumsPage = () => {
+const MemorandumsPage = ({ orgType: orgTypeProp = null }) => {
   const [userData, setUserData] = useState(null);
   const [organizationData, setOrganizationData] = useState(null);
-  const [orgType, setOrgType] = useState(null);
+  const [orgType, setOrgType] = useState(orgTypeProp);
+
+  useEffect(() => {
+    setOrgType(orgTypeProp);
+  }, [orgTypeProp]);
 
   useEffect(() => {
     let cancelled = false;
@@ -26,7 +30,7 @@ const MemorandumsPage = () => {
           const org = await getOrganizationById(userDoc.organizationId);
           if (cancelled) return;
           setOrganizationData(org);
-          setOrgType(org?.type || null);
+          if (!orgTypeProp) setOrgType(org?.type || null);
         }
       } catch (err) {
         console.error("Error loading user/org for MemorandumsPage:", err);
@@ -35,7 +39,7 @@ const MemorandumsPage = () => {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [orgTypeProp]);
 
   const organizationName = organizationData?.name || "Organization";
   const role = userData?.role || "";
@@ -50,7 +54,7 @@ const MemorandumsPage = () => {
         userRole={userRole}
         userName={userName}
       />
-      <DashboardLayout currentPage="memorandums" orgType={orgType}>
+      <DashboardLayout currentPage="memorandums" orgType={orgTypeProp ?? orgType ?? null}>
         <div className="memorandums-page-content">
           <div className="memorandums-page-header">
             <h1 className="memorandums-page-title">Memorandums</h1>

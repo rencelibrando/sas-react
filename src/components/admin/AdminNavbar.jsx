@@ -3,6 +3,7 @@ import { signOut } from "firebase/auth";
 import { auth } from "../../config/firebase";
 import { logAuthEvent } from "../../services/authActivityLogService";
 import Icon from "../Icon";
+import NotificationBell from "../NotificationBell";
 import sasLogo from "../../assets/images/logos/sas-logo.png";
 import "../../styles/colors.css";
 import "./AdminNavbar.css";
@@ -63,6 +64,7 @@ const AdminNavbar = ({ userData = null }) => {
       </div>
 
       <div className="admin-navbar-right">
+        <NotificationBell userId={auth.currentUser?.uid} isAdmin />
         <div className="admin-user-menu" ref={menuRef}>
           <button 
             className="admin-user-button"

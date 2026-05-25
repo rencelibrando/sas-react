@@ -3,6 +3,8 @@ import { onAuthStateChanged } from "firebase/auth";
 import { auth } from "./config/firebase";
 import { getUserById, updateLastLogin } from "./services/userService";
 import { getOrganizationById } from "./services/organizationService";
+import { checkAndFireReportReminders } from "./services/notificationService";
+import { markOverduePendingReports } from "./services/reportService";
 import AuthPage from "./pages/AuthPage";
 import HomePage from "./pages/HomePage";
 import AdminDashboard from "./pages/AdminDashboard";
@@ -13,11 +15,13 @@ import AdminEquipmentInventory from "./pages/AdminEquipmentInventory";
 import AdminEquipmentRequests from "./pages/AdminEquipmentRequests";
 import AdminActivityLog from "./pages/AdminActivityLog";
 import AdminMemorandums from "./pages/AdminMemorandums";
+import AdminReports from "./pages/AdminReports";
 import EquipmentBorrowingPage from "./pages/EquipmentBorrowingPage";
 import ActivityProposalsPage from "./pages/ActivityProposalsPage";
 import ISGEndorsementPage from "./pages/ISGEndorsementPage";
 import ISGDistributionPage from "./pages/ISGDistributionPage";
 import MemorandumsPage from "./pages/MemorandumsPage";
+import ReportsPage from "./pages/ReportsPage";
 import ProfilePage from "./pages/ProfilePage";
 import ReviewPage from "./pages/ReviewPage";
 import LoadingScreen from "./components/LoadingScreen";
@@ -41,7 +45,8 @@ function App() {
       setUser(currentUser);
 
       if (currentUser) {
-        if (!lastLoginUpdatedRef.current.has(currentUser.uid)) {
+        const firstAuthThisSession = !lastLoginUpdatedRef.current.has(currentUser.uid);
+        if (firstAuthThisSession) {
           lastLoginUpdatedRef.current.add(currentUser.uid);
           updateLastLogin(currentUser.uid).catch(error => {
             console.error("Error updating last login:", error);
@@ -55,6 +60,17 @@ function App() {
             setUserRole(userDoc.role || null);
           } else {
             setUserRole(null);
+          }
+          // Admin-only post-auth scans: promote overdue reports + fire deadline
+          // reminder notifications. Org users can't enumerate the reports
+          // collection (rules forbid it), so we gate by role. Non-blocking.
+          if (firstAuthThisSession && userDoc?.role === "Admin") {
+            markOverduePendingReports().catch((err) =>
+              console.error("markOverduePendingReports failed:", err)
+            );
+            checkAndFireReportReminders().catch((err) =>
+              console.error("checkAndFireReportReminders failed:", err)
+            );
           }
         } catch (error) {
           console.error("Error fetching user role:", error);
@@ -181,6 +197,9 @@ function App() {
       case "memorandums":
         pageElement = <AdminMemorandums />;
         break;
+      case "reports":
+        pageElement = <AdminReports />;
+        break;
       case "dashboard":
       default:
         pageElement = <AdminDashboard />;
@@ -195,10 +214,10 @@ function App() {
   } else {
     switch (currentPage) {
       case "activity-proposals":
-        pageElement = <ActivityProposalsPage />;
+        pageElement = <ActivityProposalsPage orgType={orgType} />;
         break;
       case "equipment-borrowing":
-        pageElement = <EquipmentBorrowingPage />;
+        pageElement = <EquipmentBorrowingPage orgType={orgType} />;
         break;
       case "isg-endorsement":
         pageElement = <ISGEndorsementPage />;
@@ -207,10 +226,13 @@ function App() {
         pageElement = <ISGDistributionPage />;
         break;
       case "memorandums":
-        pageElement = <MemorandumsPage />;
+        pageElement = <MemorandumsPage orgType={orgType} />;
+        break;
+      case "reports":
+        pageElement = <ReportsPage orgType={orgType} />;
         break;
       case "profile":
-        pageElement = <ProfilePage />;
+        pageElement = <ProfilePage orgType={orgType} />;
         break;
       case "home":
       default:

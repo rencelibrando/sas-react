@@ -145,7 +145,16 @@ const ISGEndorsementPage = () => {
     }
   };
 
-  if (loading) return <LoadingScreen />;
+  if (loading) {
+    return (
+      <div className="home-container">
+        <Navbar />
+        <DashboardLayout currentPage="isg-endorsement" orgType="ISG">
+          <LoadingScreen compact={true} />
+        </DashboardLayout>
+      </div>
+    );
+  }
 
   return (
     <div className="home-container">

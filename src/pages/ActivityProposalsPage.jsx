@@ -217,7 +217,7 @@ const OrgAdditionalRequestsPanel = ({
   );
 };
 
-const ActivityProposalsPage = () => {
+const ActivityProposalsPage = ({ orgType: orgTypeProp = null }) => {
   const [loading, setLoading] = useState(true);
   const [userData, setUserData] = useState(null);
   const [organizationData, setOrganizationData] = useState(null);
@@ -388,7 +388,7 @@ const ActivityProposalsPage = () => {
         userName={userName}
       />
       
-      <DashboardLayout currentPage="activity-proposals" orgType={organizationData?.type || null}>
+      <DashboardLayout currentPage="activity-proposals" orgType={orgTypeProp ?? organizationData?.type ?? null}>
         {loading ? (
           <LoadingScreen compact={true} />
         ) : (

@@ -34,7 +34,7 @@ const STATUS_FILTER_OPTIONS = [
   { value: EQUIPMENT_REQUEST_STATUS.REJECTED, label: "Rejected" },
 ];
 
-const EquipmentBorrowingPage = () => {
+const EquipmentBorrowingPage = ({ orgType: orgTypeProp = null }) => {
   const [loading, setLoading] = useState(true);
   const [userData, setUserData] = useState(null);
   const [organizationData, setOrganizationData] = useState(null);
@@ -134,7 +134,7 @@ const EquipmentBorrowingPage = () => {
 
       <DashboardLayout
         currentPage="equipment-borrowing"
-        orgType={organizationData?.type || null}
+        orgType={orgTypeProp ?? organizationData?.type ?? null}
       >
         {loading ? (
           <LoadingScreen compact={true} />

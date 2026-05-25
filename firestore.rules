@@ -322,6 +322,71 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // ── reports ────────────────────────────────────────────────────────────
+    // Post-activity report obligations tied to an approved activity proposal.
+    // Created by the system on proposal distribution (createReportRequirements);
+    // submitted (file uploaded) by the owning org; reviewed by admins.
+    match /reports/{reportId} {
+      allow read: if isAuthenticated() && (
+        isAdmin()
+        || (isOrganizationUser()
+            && resource.data.organizationId != null
+            && belongsToOrg(resource.data.organizationId))
+      );
+
+      // Creation happens client-side from service layer after ISG distribution.
+      // Require shape integrity and the creator to be authenticated.
+      allow create: if isAuthenticated()
+                    && request.resource.data.proposalId is string
+                    && request.resource.data.organizationId is string
+                    && request.resource.data.reportType is string
+                    && request.resource.data.status == 'pending';
+
+      // Owning org may upload/replace their report file (writes touch only
+      // submission-related fields); admins may review/update anything.
+      allow update: if isAdmin()
+                    || (
+                      isOrganizationUser()
+                      && resource.data.organizationId != null
+                      && belongsToOrg(resource.data.organizationId)
+                      && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                        'status', 'submittedAt', 'submittedBy', 'file',
+                        'revisionCount', 'lastUpdated',
+                        'reviewedAt', 'reviewedBy', 'reviewRemarks'
+                      ])
+                      && request.resource.data.status in ['submitted', 'late']
+                    );
+
+      allow delete: if isAdmin();
+    }
+
+    // ── notifications ──────────────────────────────────────────────────────
+    // In-app notifications. Each doc targets a single recipient. Reads are
+    // limited to that recipient; the recipient (or an admin) may flip
+    // `isRead`. Creation is permitted by authenticated callers — the
+    // service layer fans out from event sources.
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && (
+        isAdmin() || resource.data.recipientId == request.auth.uid
+      );
+
+      allow create: if isAuthenticated()
+                    && request.resource.data.recipientId is string
+                    && request.resource.data.type is string
+                    && request.resource.data.isRead == false;
+
+      // Recipient (or admin) may mark as read; nothing else may change.
+      allow update: if isAuthenticated() && (
+        isAdmin()
+        || (
+          resource.data.recipientId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead'])
+        )
+      );
+
+      allow delete: if isAdmin();
+    }
+
     // ── Default deny ───────────────────────────────────────────────────────
     match /{document=**} {
       allow read, write: if false;

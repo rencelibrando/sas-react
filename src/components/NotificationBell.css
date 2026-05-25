@@ -1,0 +1,130 @@
+.notification-bell {
+  position: relative;
+  display: inline-flex;
+  margin-right: 0.5rem;
+}
+
+.notification-bell-button {
+  background: transparent;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  padding: 0.4rem;
+  border-radius: 50%;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.notification-bell-button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.notification-bell-badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  padding: 0 0.3rem;
+  background: var(--earist-gold, #ffd700);
+  color: #5a2300;
+  font-size: 0.7rem;
+  font-weight: 700;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--earist-maroon, #800020);
+  box-sizing: content-box;
+}
+
+.notification-bell-dropdown {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  background: #fff;
+  width: 340px;
+  max-height: 420px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  z-index: 1000;
+}
+
+.notification-bell-header {
+  background: var(--earist-maroon, #800020);
+  color: #fff;
+  padding: 0.6rem 0.9rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.notification-bell-mark-all {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  color: #fff;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.notification-bell-mark-all:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.notification-bell-empty {
+  padding: 1.5rem;
+  text-align: center;
+  color: #777;
+  font-size: 0.9rem;
+}
+
+.notification-bell-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+
+.notification-bell-item {
+  padding: 0.7rem 0.9rem;
+  border-bottom: 1px solid #eee;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.notification-bell-item:hover {
+  background: #faf6e8;
+}
+
+.notification-bell-item--unread {
+  background: #fffaf0;
+  border-left: 3px solid var(--earist-maroon, #800020);
+}
+
+.notification-bell-item-title {
+  font-weight: 600;
+  color: var(--earist-maroon, #800020);
+  font-size: 0.9rem;
+  margin-bottom: 0.2rem;
+}
+
+.notification-bell-item-message {
+  font-size: 0.8rem;
+  color: #555;
+  line-height: 1.35;
+}
+
+.notification-bell-item-time {
+  margin-top: 0.3rem;
+  font-size: 0.7rem;
+  color: #999;
+}

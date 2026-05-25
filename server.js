@@ -616,6 +616,115 @@ app.post('/api/send-additional-doc-request', async (req, res) => {
   }
 });
 
+// Fan out an in-app notification to all admin users. Uses Admin SDK so
+// authenticated org users (who cannot enumerate the users collection) can
+// still trigger admin alerts via this endpoint.
+app.post('/api/notify-admins', async (req, res) => {
+  try {
+    if (!adminInitialized) {
+      return res.status(503).json({ success: false, error: 'Notification service unavailable. Firebase Admin SDK is not initialized.' });
+    }
+    const { type, title, message, link, sourceCollection, sourceId } = req.body || {};
+    if (!type || !title) {
+      return res.status(400).json({ success: false, error: 'type and title are required' });
+    }
+
+    const db = admin.firestore();
+    const FieldValue = admin.firestore.FieldValue;
+
+    const adminsSnap = await db.collection('users').where('role', '==', 'Admin').get();
+    if (adminsSnap.empty) {
+      return res.json({ success: true, recipients: 0 });
+    }
+
+    const batch = db.batch();
+    adminsSnap.docs.forEach((u) => {
+      const ref = db.collection('notifications').doc();
+      batch.set(ref, {
+        notificationId: ref.id,
+        recipientId: u.id,
+        type,
+        title,
+        message: message || '',
+        link: link || null,
+        sourceCollection: sourceCollection || null,
+        sourceId: sourceId || null,
+        reminderTier: null,
+        isRead: false,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    });
+    await batch.commit();
+    res.json({ success: true, recipients: adminsSnap.size });
+  } catch (error) {
+    console.error('Error fanning out admin notifications:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to send admin notifications',
+      details: error.message,
+    });
+  }
+});
+
+// Generic in-app notification email mirror — used by notificationService.js
+// when notifications are flagged `alsoEmail: true` (deadline reminders,
+// overdue alerts, report review outcomes, etc.).
+app.post('/api/send-notification-email', async (req, res) => {
+  try {
+    const { to, subject, message, link } = req.body;
+    if (!to || !subject) {
+      return res.status(400).json({
+        success: false,
+        error: 'Recipient email and subject are required',
+      });
+    }
+    const portalUrl = process.env.FRONTEND_BASE_URL || 'http://localhost:5173';
+    const cta = link
+      ? `<div style="text-align:center;margin:20px 0;">
+           <a href="${portalUrl}" style="color:#fff;background:#800020;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;">Open SAS Portal</a>
+         </div>`
+      : '';
+    await transporter.sendMail({
+      from: 'sas.webapp.portal@gmail.com',
+      to,
+      subject: `EARIST SAS Portal - ${subject}`,
+      html: `
+        <!DOCTYPE html>
+        <html><head><meta charset="UTF-8"><style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; }
+          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background:#800020;color:#fff;padding:20px;text-align:center;border-radius:8px 8px 0 0; }
+          .header h2 { margin: 0; font-size: 1.4rem; }
+          .content { background:#f5f5dc;padding:30px;border-radius:0 0 8px 8px; }
+          .msg { color:#333; white-space: pre-wrap; }
+          .footer { text-align:center;color:#888;font-size:12px;margin-top:24px; }
+        </style></head>
+        <body>
+          <div class="container">
+            <div class="header"><h2>EARIST SAS Portal</h2><p style="margin:4px 0 0">${subject}</p></div>
+            <div class="content">
+              <p class="msg">${(message || '').replace(/</g, '&lt;')}</p>
+              ${cta}
+            </div>
+            <div class="footer">
+              <p>This is an automated message from EARIST SAS Portal.</p>
+              <p>© ${new Date().getFullYear()} EARIST Student Affairs Services. All rights reserved.</p>
+            </div>
+          </div>
+        </body></html>
+      `,
+    });
+    res.json({ success: true, message: 'Notification email sent' });
+  } catch (error) {
+    console.error('Error sending notification email:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to send notification email',
+      details: error.message,
+    });
+  }
+});
+
 // Send tokenized review link to VPAA or OP
 app.post('/api/send-review-link', async (req, res) => {
   try {

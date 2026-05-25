@@ -5,9 +5,17 @@ import { getUserById, updateUserPassword, updateUserEmail, deleteUserAccount } f
 import { getOrganizationById } from "../services/organizationService";
 import AdminLayout from "../components/admin/AdminLayout";
 import LoadingScreen from "../components/LoadingScreen";
+import Icon from "../components/Icon";
 import { formatDateTime } from "../utils/formatters";
 import "../styles/colors.css";
 import "./ProfilePage.css";
+
+const getInitials = (name = "") => {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+};
 
 const AdminProfilePage = () => {
   const [loading, setLoading] = useState(true);
@@ -22,15 +30,14 @@ const AdminProfilePage = () => {
   const [passwordError, setPasswordError] = useState("");
   const [passwordSuccess, setPasswordSuccess] = useState("");
   const [updatingPassword, setUpdatingPassword] = useState(false);
-  
-  // Email editing state
+
   const [isEditingEmail, setIsEditingEmail] = useState(false);
   const [emailValue, setEmailValue] = useState("");
   const [emailError, setEmailError] = useState("");
   const [emailSuccess, setEmailSuccess] = useState("");
   const [updatingEmail, setUpdatingEmail] = useState(false);
 
-  // Account actions state
+  const [showDangerZone, setShowDangerZone] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deletingAccount, setDeletingAccount] = useState(false);
   const [deleteError, setDeleteError] = useState("");
@@ -114,8 +121,7 @@ const AdminProfilePage = () => {
       await updateUserEmail(emailValue);
       setEmailSuccess("Email updated successfully");
       setIsEditingEmail(false);
-      
-      // Refresh user data
+
       const user = auth.currentUser;
       if (user) {
         const userDoc = await getUserById(user.uid);
@@ -132,7 +138,6 @@ const AdminProfilePage = () => {
   const handleLogout = async () => {
     try {
       await signOut(auth);
-      // User will be redirected by auth state change
     } catch (error) {
       console.error("Error signing out:", error);
       alert("Failed to sign out. Please try again.");
@@ -144,12 +149,8 @@ const AdminProfilePage = () => {
     setDeletingAccount(true);
 
     try {
-      // Delete user account
       await deleteUserAccount();
-      
-      // Sign out after deletion
       await signOut(auth);
-      // User will be redirected by auth state change
     } catch (error) {
       console.error("Error deleting account:", error);
       setDeleteError(error.message || "Failed to delete account. Please try again.");
@@ -167,255 +168,312 @@ const AdminProfilePage = () => {
 
   const organizationName = organizationData?.name || "System";
   const userRole = userData?.userRole || "Administrator";
+  const status = (userData?.status || "active").toLowerCase();
+  const initials = getInitials(userData?.fullName || auth.currentUser?.email || "Admin");
 
   return (
     <AdminLayout userData={userData} currentPage="profile">
       <div className="profile-page">
         {/* Profile Header */}
         <div className="profile-header">
-          <div className="profile-header-content">
-            <div>
-              <h1 className="profile-name">{userData?.fullName || "Administrator"}</h1>
-              <p className="profile-role">Admin - {userRole}</p>
-            </div>
-            <div className="verification-badge-container">
-              <span className="status-badge status-badge-approved">
-                Verified
+          <div className="profile-avatar profile-avatar--admin" aria-hidden="true">
+            <span className="profile-avatar-text">{initials}</span>
+          </div>
+          <div className="profile-header-info">
+            <h1 className="profile-name">{userData?.fullName || "Administrator"}</h1>
+            <div className="profile-meta-row">
+              <span className="profile-chip profile-chip--role">Admin</span>
+              <span className="profile-chip profile-chip--subrole">{userRole}</span>
+              <span className="profile-meta-org">
+                <Icon name="building" size={14} />
+                {organizationName}
               </span>
             </div>
           </div>
+          <div className="profile-header-status">
+            <span className={`profile-status-dot profile-status-dot--${status}`} />
+            <span className="profile-status-label">{status === "active" ? "Active" : status}</span>
+          </div>
         </div>
 
-        <div className="profile-content">
-          {/* Account Information Section */}
-          <div className="profile-section">
-            <h2 className="section-title">Account Information</h2>
-            <div className="profile-info-grid">
-              <div className="info-item">
-                <label className="info-label">Full Name</label>
-                <div className="info-value">{userData?.fullName || "Not set"}</div>
+        {/* Two-column body */}
+        <div className="profile-grid">
+          {/* Left: Account Information */}
+          <section className="profile-card">
+            <header className="profile-card-header">
+              <Icon name="profile" size={20} />
+              <h2 className="profile-card-title">Account Information</h2>
+            </header>
+            <div className="profile-card-body">
+              <div className="profile-info-list">
+                <div className="profile-info-row">
+                  <div className="profile-info-label">Full Name</div>
+                  <div className="profile-info-value">{userData?.fullName || "Not set"}</div>
+                </div>
+
+                <div className="profile-info-row">
+                  <div className="profile-info-label">Email</div>
+                  {!isEditingEmail ? (
+                    <div className="profile-info-value profile-info-value--with-action">
+                      <span>{emailValue || "Not set"}</span>
+                      <button
+                        className="profile-action-btn"
+                        onClick={() => setIsEditingEmail(true)}
+                        aria-label="Edit email"
+                      >
+                        <Icon name="edit" size={14} />
+                        Edit
+                      </button>
+                    </div>
+                  ) : (
+                    <form onSubmit={handleEmailUpdate} className="inline-edit-form">
+                      {emailError && <div className="form-error-small">{emailError}</div>}
+                      {emailSuccess && <div className="form-success-small">{emailSuccess}</div>}
+                      <div className="inline-edit-input-group">
+                        <input
+                          type="email"
+                          className="form-input inline-edit-input"
+                          value={emailValue}
+                          onChange={(e) => setEmailValue(e.target.value)}
+                          required
+                        />
+                        <div className="inline-edit-actions">
+                          <button
+                            type="button"
+                            className="btn-link"
+                            onClick={() => {
+                              setIsEditingEmail(false);
+                              setEmailValue(auth.currentUser?.email || "");
+                              setEmailError("");
+                              setEmailSuccess("");
+                            }}
+                            disabled={updatingEmail}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="submit"
+                            className="btn-primary-small"
+                            disabled={updatingEmail}
+                          >
+                            {updatingEmail ? "Saving..." : "Save"}
+                          </button>
+                        </div>
+                      </div>
+                    </form>
+                  )}
+                </div>
+
+                <div className="profile-info-row">
+                  <div className="profile-info-label">Role</div>
+                  <div className="profile-info-value">Admin</div>
+                </div>
+
+                <div className="profile-info-row">
+                  <div className="profile-info-label">Position</div>
+                  <div className="profile-info-value">{userRole}</div>
+                </div>
+
+                <div className="profile-info-row">
+                  <div className="profile-info-label">Organization</div>
+                  <div className="profile-info-value">{organizationName}</div>
+                </div>
               </div>
-              <div className="info-item">
-                <label className="info-label">Email</label>
-                {!isEditingEmail ? (
-                  <div className="info-value-with-action">
-                    <div className="info-value">{emailValue || "Not set"}</div>
-                    <button
-                      className="btn-link"
-                      onClick={() => setIsEditingEmail(true)}
-                    >
-                      Edit
-                    </button>
+            </div>
+          </section>
+
+          {/* Right: Security */}
+          <section className="profile-card">
+            <header className="profile-card-header">
+              <Icon name="lock" size={20} />
+              <h2 className="profile-card-title">Security</h2>
+            </header>
+            <div className="profile-card-body">
+              <div className="profile-info-list">
+                <div className="profile-info-row">
+                  <div className="profile-info-label">Password</div>
+                  <div className="profile-info-value profile-info-value--with-action">
+                    <span className="profile-password-mask">••••••••••</span>
+                    {!showPasswordForm && (
+                      <button
+                        className="profile-action-btn"
+                        onClick={() => setShowPasswordForm(true)}
+                      >
+                        <Icon name="edit" size={14} />
+                        Change
+                      </button>
+                    )}
                   </div>
-                ) : (
-                  <form onSubmit={handleEmailUpdate} className="inline-edit-form">
-                    {emailError && <div className="form-error-small">{emailError}</div>}
-                    {emailSuccess && <div className="form-success-small">{emailSuccess}</div>}
-                    <div className="inline-edit-input-group">
+                </div>
+
+                <div className="profile-info-row">
+                  <div className="profile-info-label">Account Verification</div>
+                  <div className="profile-info-value profile-info-value--with-action">
+                    <span>System-verified administrator</span>
+                    <span className="profile-verified-badge">
+                      <span className="profile-verified-check">✓</span>
+                      Verified
+                    </span>
+                  </div>
+                </div>
+
+                <div className="profile-info-row">
+                  <div className="profile-info-label">Last Login</div>
+                  <div className="profile-info-value">{formatDateTime(userData?.lastLogin) || "—"}</div>
+                </div>
+              </div>
+
+              {showPasswordForm && (
+                <div className="password-form-container">
+                  <form className="password-form" onSubmit={handlePasswordChange}>
+                    {passwordError && (
+                      <div className="form-error">{passwordError}</div>
+                    )}
+                    {passwordSuccess && (
+                      <div className="form-success">{passwordSuccess}</div>
+                    )}
+
+                    <div className="form-group">
+                      <label htmlFor="currentPassword" className="form-label">
+                        Current Password
+                      </label>
                       <input
-                        type="email"
-                        className="form-input inline-edit-input"
-                        value={emailValue}
-                        onChange={(e) => setEmailValue(e.target.value)}
+                        type="password"
+                        id="currentPassword"
+                        className="form-input"
+                        value={passwordData.currentPassword}
+                        onChange={(e) => setPasswordData({ ...passwordData, currentPassword: e.target.value })}
                         required
                       />
-                      <div className="inline-edit-actions">
-                        <button
-                          type="button"
-                          className="btn-link"
-                          onClick={() => {
-                            setIsEditingEmail(false);
-                            setEmailValue(auth.currentUser?.email || "");
-                            setEmailError("");
-                            setEmailSuccess("");
-                          }}
-                          disabled={updatingEmail}
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="submit"
-                          className="btn-primary-small"
-                          disabled={updatingEmail}
-                        >
-                          {updatingEmail ? "Saving..." : "Save"}
-                        </button>
-                      </div>
+                    </div>
+
+                    <div className="form-group">
+                      <label htmlFor="newPassword" className="form-label">
+                        New Password
+                      </label>
+                      <input
+                        type="password"
+                        id="newPassword"
+                        className="form-input"
+                        value={passwordData.newPassword}
+                        onChange={(e) => setPasswordData({ ...passwordData, newPassword: e.target.value })}
+                        minLength={6}
+                        required
+                      />
+                      <span className="form-hint">Must be at least 6 characters</span>
+                    </div>
+
+                    <div className="form-group">
+                      <label htmlFor="confirmPassword" className="form-label">
+                        Confirm New Password
+                      </label>
+                      <input
+                        type="password"
+                        id="confirmPassword"
+                        className="form-input"
+                        value={passwordData.confirmPassword}
+                        onChange={(e) => setPasswordData({ ...passwordData, confirmPassword: e.target.value })}
+                        required
+                      />
+                    </div>
+
+                    <div className="form-actions">
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => {
+                          setShowPasswordForm(false);
+                          setPasswordData({
+                            currentPassword: "",
+                            newPassword: "",
+                            confirmPassword: ""
+                          });
+                          setPasswordError("");
+                          setPasswordSuccess("");
+                        }}
+                        disabled={updatingPassword}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="btn-primary"
+                        disabled={updatingPassword}
+                      >
+                        {updatingPassword ? "Updating..." : "Update Password"}
+                      </button>
                     </div>
                   </form>
-                )}
-              </div>
-              <div className="info-item">
-                <label className="info-label">Role</label>
-                <div className="info-value">Admin</div>
-              </div>
-              <div className="info-item">
-                <label className="info-label">User Role</label>
-                <div className="info-value">{userRole}</div>
-              </div>
-              <div className="info-item">
-                <label className="info-label">Organization</label>
-                <div className="info-value">{organizationName}</div>
-              </div>
-              <div className="info-item">
-                <label className="info-label">Status</label>
-                <div className="info-value">{userData?.status || "active"}</div>
-              </div>
-              <div className="info-item">
-                <label className="info-label">Password</label>
-                <div className="info-value-with-action">
-                  <div className="info-value">••••••••</div>
-                  {!showPasswordForm && (
-                    <button
-                      className="btn-link"
-                      onClick={() => setShowPasswordForm(true)}
-                    >
-                      Change Password
-                    </button>
-                  )}
                 </div>
-              </div>
+              )}
             </div>
-
-            {/* Password Change Form */}
-            {showPasswordForm && (
-              <div className="password-form-container">
-                <form className="password-form" onSubmit={handlePasswordChange}>
-                  {passwordError && (
-                    <div className="form-error">{passwordError}</div>
-                  )}
-                  {passwordSuccess && (
-                    <div className="form-success">{passwordSuccess}</div>
-                  )}
-                  
-                  <div className="form-group">
-                    <label htmlFor="currentPassword" className="form-label">
-                      Current Password
-                    </label>
-                    <input
-                      type="password"
-                      id="currentPassword"
-                      className="form-input"
-                      value={passwordData.currentPassword}
-                      onChange={(e) => setPasswordData({ ...passwordData, currentPassword: e.target.value })}
-                      required
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label htmlFor="newPassword" className="form-label">
-                      New Password
-                    </label>
-                    <input
-                      type="password"
-                      id="newPassword"
-                      className="form-input"
-                      value={passwordData.newPassword}
-                      onChange={(e) => setPasswordData({ ...passwordData, newPassword: e.target.value })}
-                      minLength={6}
-                      required
-                    />
-                    <span className="form-hint">Must be at least 6 characters</span>
-                  </div>
-
-                  <div className="form-group">
-                    <label htmlFor="confirmPassword" className="form-label">
-                      Confirm New Password
-                    </label>
-                    <input
-                      type="password"
-                      id="confirmPassword"
-                      className="form-input"
-                      value={passwordData.confirmPassword}
-                      onChange={(e) => setPasswordData({ ...passwordData, confirmPassword: e.target.value })}
-                      required
-                    />
-                  </div>
-
-                  <div className="form-actions">
-                    <button
-                      type="button"
-                      className="btn-secondary"
-                      onClick={() => {
-                        setShowPasswordForm(false);
-                        setPasswordData({
-                          currentPassword: "",
-                          newPassword: "",
-                          confirmPassword: ""
-                        });
-                        setPasswordError("");
-                        setPasswordSuccess("");
-                      }}
-                      disabled={updatingPassword}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      className="btn-primary"
-                      disabled={updatingPassword}
-                    >
-                      {updatingPassword ? "Updating..." : "Update Password"}
-                    </button>
-                  </div>
-                </form>
-              </div>
-            )}
-          </div>
-
-          {/* Verification Section */}
-          <div className="profile-section">
-            <h2 className="section-title">Verification</h2>
-            <div className="verification-verified">
-              <div className="verification-status-info">
-                <div className="info-item">
-                  <label className="info-label">Status</label>
-                  <div className="info-value status-verified">
-                    Verified
-                  </div>
-                </div>
-              </div>
-              <p className="verification-helper-text">
-                Administrator accounts are system-verified.
-              </p>
-            </div>
-          </div>
-
-          {/* Account History Section */}
-          <div className="profile-section">
-            <h2 className="section-title">Account History</h2>
-            <div className="profile-info-grid">
-              <div className="info-item">
-                <label className="info-label">Date Created</label>
-                <div className="info-value">{formatDateTime(userData?.dateCreated)}</div>
-              </div>
-              <div className="info-item">
-                <label className="info-label">Last Updated</label>
-                <div className="info-value">{formatDateTime(userData?.lastUpdated)}</div>
-              </div>
-              <div className="info-item">
-                <label className="info-label">Last Login</label>
-                <div className="info-value">{formatDateTime(userData?.lastLogin)}</div>
-              </div>
-            </div>
-          </div>
-
-          {/* Account Actions */}
-          <div className="account-actions">
-            <button
-              className="btn-secondary"
-              onClick={handleLogout}
-            >
-              Log Out
-            </button>
-            <button
-              className="btn-danger"
-              onClick={() => setShowDeleteConfirm(true)}
-            >
-              Delete Account
-            </button>
-          </div>
+          </section>
         </div>
+
+        {/* Account History strip */}
+        <section className="profile-card profile-card--strip">
+          <header className="profile-card-header">
+            <Icon name="analytics" size={20} />
+            <h2 className="profile-card-title">Account History</h2>
+          </header>
+          <div className="profile-history-grid">
+            <div className="profile-history-item">
+              <div className="profile-history-label">Date Created</div>
+              <div className="profile-history-value">{formatDateTime(userData?.dateCreated) || "—"}</div>
+            </div>
+            <div className="profile-history-item">
+              <div className="profile-history-label">Last Updated</div>
+              <div className="profile-history-value">{formatDateTime(userData?.lastUpdated) || "—"}</div>
+            </div>
+            <div className="profile-history-item">
+              <div className="profile-history-label">Last Login</div>
+              <div className="profile-history-value">{formatDateTime(userData?.lastLogin) || "—"}</div>
+            </div>
+          </div>
+        </section>
+
+        {/* Danger Zone */}
+        <section className={`profile-card profile-danger-zone ${showDangerZone ? "is-open" : ""}`}>
+          <button
+            type="button"
+            className="profile-danger-toggle"
+            onClick={() => setShowDangerZone(!showDangerZone)}
+            aria-expanded={showDangerZone}
+          >
+            <div className="profile-danger-toggle-left">
+              <span className="profile-danger-icon">!</span>
+              <div>
+                <div className="profile-danger-title">Danger Zone</div>
+                <div className="profile-danger-subtitle">Sign out or permanently delete your account</div>
+              </div>
+            </div>
+            <Icon name={showDangerZone ? "chevron-up" : "chevron-down"} size={18} />
+          </button>
+
+          {showDangerZone && (
+            <div className="profile-danger-body">
+              <div className="profile-danger-row">
+                <div className="profile-danger-row-text">
+                  <div className="profile-danger-row-title">Log out</div>
+                  <div className="profile-danger-row-desc">End your current session on this device.</div>
+                </div>
+                <button className="btn-secondary" onClick={handleLogout}>Log Out</button>
+              </div>
+              <div className="profile-danger-row">
+                <div className="profile-danger-row-text">
+                  <div className="profile-danger-row-title">Delete account</div>
+                  <div className="profile-danger-row-desc">Permanently remove your administrator account and all access. This cannot be undone.</div>
+                </div>
+                <button
+                  className="btn-danger"
+                  onClick={() => setShowDeleteConfirm(true)}
+                >
+                  Delete Account
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
       </div>
 
       {/* Delete Account Confirmation Modal */}
@@ -471,4 +529,3 @@ const AdminProfilePage = () => {
 };
 
 export default AdminProfilePage;
-

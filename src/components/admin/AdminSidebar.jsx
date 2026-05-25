@@ -9,6 +9,7 @@ const AdminSidebar = ({ currentPage = "dashboard", onNavigate }) => {
   const menuItems = [
     { id: "dashboard", label: "Dashboard Overview", icon: "dashboard" },
     { id: "activity-proposals", label: "Activity Proposals", icon: "activity-proposals" },
+    { id: "reports", label: "Reports", icon: "reports" },
     { id: "memorandums", label: "Memorandums", icon: "documents" },
     { id: "equipment-requests", label: "Equipment Requests", icon: "equipment" },
     { id: "equipment-inventory", label: "Equipment Inventory", icon: "equipment-management" },

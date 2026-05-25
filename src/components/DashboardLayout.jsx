@@ -11,6 +11,7 @@ const DashboardLayout = ({ children, currentPage = "dashboard", orgType = null }
         { id: "isg-endorsement", label: "Endorsement Queue", icon: "activity-proposals" },
         { id: "isg-distribution", label: "Distribution", icon: "dashboard" },
         { id: "activity-proposals", label: "Our Proposals", icon: "activity-proposals" },
+        { id: "reports", label: "Reports", icon: "reports" },
         { id: "equipment-borrowing", label: "Equipment Borrowing", icon: "equipment" },
         { id: "memorandums", label: "Memorandums", icon: "documents" },
         { id: "profile", label: "Profile", icon: "profile" },
@@ -18,6 +19,7 @@ const DashboardLayout = ({ children, currentPage = "dashboard", orgType = null }
     : [
         { id: "dashboard", label: "Dashboard", icon: "dashboard" },
         { id: "activity-proposals", label: "Activity Proposals", icon: "activity-proposals" },
+        { id: "reports", label: "Reports", icon: "reports" },
         { id: "equipment-borrowing", label: "Equipment Borrowing", icon: "equipment" },
         { id: "profile", label: "Profile", icon: "profile" },
       ];
@@ -29,6 +31,7 @@ const DashboardLayout = ({ children, currentPage = "dashboard", orgType = null }
     "isg-endorsement": "isg-endorsement",
     "isg-distribution": "isg-distribution",
     memorandums: "memorandums",
+    reports: "reports",
     profile: "profile",
   };
 

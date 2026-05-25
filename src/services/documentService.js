@@ -16,6 +16,7 @@ import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { db, storage } from "../config/firebase";
 import { getUserById } from "./userService";
 import { getRequiredKeys, REQUIREMENT_LABELS } from "../utils/proposalConstants";
+import { createReportRequirements } from "./reportService";
 
 /**
  * Document Service
@@ -33,7 +34,7 @@ import { getRequiredKeys, REQUIREMENT_LABELS } from "../utils/proposalConstants"
  * Creates document with `files` array schema and initializes the pipeline.
  */
 export const submitActivityProposal = async (
-  { title, description, proposalFlags, submitterRole },
+  { title, description, activityDate, activityEndDate, proposalFlags, submitterRole },
   uploadedFiles,
   userId,
   organizationId
@@ -41,6 +42,22 @@ export const submitActivityProposal = async (
   if (!title?.trim()) throw new Error("Proposal title is required");
   if (title.length > 200) throw new Error("Title must be 200 characters or less");
   if (!organizationId) throw new Error("Organization not found");
+  if (!activityDate) throw new Error("Activity date is required");
+
+  const activityDateObj = new Date(activityDate);
+  if (Number.isNaN(activityDateObj.getTime())) {
+    throw new Error("Activity date is invalid");
+  }
+  let activityEndDateObj = null;
+  if (activityEndDate) {
+    activityEndDateObj = new Date(activityEndDate);
+    if (Number.isNaN(activityEndDateObj.getTime())) {
+      throw new Error("Activity end date is invalid");
+    }
+    if (activityEndDateObj < activityDateObj) {
+      throw new Error("Activity end date cannot be earlier than start date");
+    }
+  }
 
   const isISGSubmission = submitterRole === "ISG";
   const requiredKeys = getRequiredKeys(proposalFlags, { isISG: isISGSubmission });
@@ -113,6 +130,8 @@ export const submitActivityProposal = async (
     direction: "incoming",
     title: title.trim(),
     description: description?.trim() || "",
+    activityDate: Timestamp.fromDate(activityDateObj),
+    activityEndDate: activityEndDateObj ? Timestamp.fromDate(activityEndDateObj) : null,
     files: filesArray,
     proposalFlags,
     revisionCount: 0,
@@ -1120,6 +1139,21 @@ export const markAsDistributed = async (documentId, userId) => {
   });
 
   await batch.commit();
+
+  // Create post-activity report obligations now that the proposal is fully approved.
+  // Skipped silently for legacy proposals without an activityDate (option (a)).
+  try {
+    await createReportRequirements({
+      documentId,
+      organizationId: data.organizationId,
+      submitterRole: data.submitterRole,
+      title: data.title,
+      activityDate: data.activityDate,
+      activityEndDate: data.activityEndDate,
+    });
+  } catch (err) {
+    console.error("Failed to create report requirements:", err);
+  }
 };
 
 /**
