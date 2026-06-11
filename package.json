@@ -3,8 +3,12 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "dev": "vite",
+    "start": "node server.js",
     "server": "node server.js",
     "dev:all": "concurrently \"npm run server\" \"npm run dev\"",
     "build": "vite build",

@@ -33,12 +33,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Initialize Firebase Admin SDK
-// Make sure you have serviceAccountKey.json in the same directory
-// Or use environment variables (see FIREBASE_ADMIN_SETUP.md)
+// In production, prefer FIREBASE_SERVICE_ACCOUNT_JSON. Locally, fall back to
+// serviceAccountKey.json in the project root.
 let adminInitialized = false;
 let storageBucketName = null;
 try {
-  const serviceAccount = require(join(__dirname, './serviceAccountKey.json'));
+  const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
+    ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)
+    : require(join(__dirname, './serviceAccountKey.json'));
   storageBucketName =
     process.env.FIREBASE_STORAGE_BUCKET ||
     process.env.VITE_FIREBASE_STORAGE_BUCKET ||
@@ -51,13 +53,58 @@ try {
   console.log(`Firebase Admin SDK initialized successfully (bucket: ${storageBucketName})`);
 } catch (error) {
   console.error('Error initializing Firebase Admin SDK:', error.message);
-  console.error('Make sure serviceAccountKey.json exists in the backend directory');
+  console.error('Set FIREBASE_SERVICE_ACCOUNT_JSON in production, or keep serviceAccountKey.json locally');
   console.error('Password reset endpoint will not work until Admin SDK is initialized');
   // Don't exit - allow server to start for OTP functionality
 }
 
 const app = express();
-app.use(cors());
+
+// ── CORS allowlist ──────────────────────────────────────────────────────────
+// In production set FRONTEND_BASE_URL to the deployed origin(s), comma-separated.
+// In dev, any localhost / 127.0.0.1 origin is accepted so Vite's port (5173,
+// 5174, ...) and host (localhost vs 127.0.0.1) don't matter for local testing.
+const isDev = process.env.NODE_ENV !== 'production';
+const frontendBaseUrlConfig = process.env.FRONTEND_BASE_URL || (isDev ? 'http://localhost:5173' : '');
+const corsOrigins = frontendBaseUrlConfig
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+const isLocalhostOrigin = (origin) =>
+  /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+const getRequestOrigin = (req) => {
+  if (req?.headers?.origin) return req.headers.origin;
+  if (req?.headers?.referer) {
+    try {
+      return new URL(req.headers.referer).origin;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+};
+const getFrontendBaseUrl = (req) => {
+  if (corsOrigins.length > 0) return corsOrigins[0];
+  if (isDev) return getRequestOrigin(req) || 'http://localhost:5173';
+  throw new Error('FRONTEND_BASE_URL is required in production');
+};
+
+if (!isDev && corsOrigins.length === 0) {
+  console.warn('[config] FRONTEND_BASE_URL is required in production for CORS and email links');
+}
+
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      if (corsOrigins.includes(origin)) return cb(null, true);
+      if (isDev && isLocalhostOrigin(origin)) return cb(null, true);
+      console.warn(`[cors] rejected origin ${origin}`);
+      return cb(new Error(`CORS: origin ${origin} not allowed`));
+    },
+    credentials: false,
+  })
+);
 app.use(express.json());
 
 // Multer in-memory uploader for signature images (max 2MB)
@@ -601,7 +648,7 @@ app.post('/api/send-additional-doc-request', async (req, res) => {
         documentTitle,
         requestLabel,
         requestDescription,
-        portalUrl: portalUrl || 'http://localhost:5173',
+        portalUrl: portalUrl || getFrontendBaseUrl(req),
       })
     );
     console.log(`Additional doc request notification sent to ${to}`);
@@ -678,7 +725,7 @@ app.post('/api/send-notification-email', async (req, res) => {
         error: 'Recipient email and subject are required',
       });
     }
-    const portalUrl = process.env.FRONTEND_BASE_URL || 'http://localhost:5173';
+    const portalUrl = getFrontendBaseUrl(req);
     const cta = link
       ? `<div style="text-align:center;margin:20px 0;">
            <a href="${portalUrl}" style="color:#fff;background:#800020;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;">Open SAS Portal</a>
@@ -1296,11 +1343,7 @@ app.post('/api/review/:token/decision', async (req, res) => {
           remarks: null,
         });
 
-        const reviewBaseUrl =
-          process.env.FRONTEND_BASE_URL ||
-          req.headers.origin ||
-          (req.headers.referer ? new URL(req.headers.referer).origin : null) ||
-          'http://localhost:5173';
+        const reviewBaseUrl = getFrontendBaseUrl(req);
 
         nextForward = {
           stage: nextStage,
@@ -1581,7 +1624,8 @@ app.get('/health', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+const HOST = '0.0.0.0';
+app.listen(PORT, HOST, () => {
   console.log(`Email OTP API server running on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`Send OTP: POST http://localhost:${PORT}/api/send-otp`);
@@ -1593,5 +1637,3 @@ app.listen(PORT, () => {
     console.log('\n✓ Firebase Admin SDK initialized - password reset is available');
   }
 });
-
-
