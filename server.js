@@ -68,7 +68,7 @@ const isDev = process.env.NODE_ENV !== 'production';
 const frontendBaseUrlConfig = process.env.FRONTEND_BASE_URL || (isDev ? 'http://localhost:5173' : '');
 const corsOrigins = frontendBaseUrlConfig
   .split(',')
-  .map((o) => o.trim())
+  .map((o) => o.trim().replace(/\/$/, ''))
   .filter(Boolean);
 const isLocalhostOrigin = (origin) =>
   /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);

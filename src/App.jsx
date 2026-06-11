@@ -149,8 +149,6 @@ function App() {
     return () => window.removeEventListener("pageNavigate", handlePageNavigate);
   }, []);
 
-  const otpInProgress = sessionStorage.getItem("pendingAuth") !== null;
-
   if (isReviewRoute) {
     return (
       <div className="App">
@@ -163,7 +161,7 @@ function App() {
     return <LoadingScreen />;
   }
 
-  if (!user || otpInProgress) {
+  if (!user) {
     return (
       <div className="App">
         <AuthPage />

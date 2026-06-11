@@ -42,10 +42,49 @@ const AuthPage = () => {
 
     try {
       const cred = await signInWithEmailAndPassword(auth, email, password);
+      
+      // Check if user exists in Firestore
+      const userDoc = await getUserById(cred.user.uid);
+
+      if (!userDoc) {
+        await signOut(auth);
+        logAuthEvent({
+          type: "login_failed",
+          email,
+          userId: cred.user.uid,
+          success: false,
+          errorCode: "no-firestore-user",
+          context: "email-password",
+        });
+        setError("No account found in the system. Please contact SAS office for organization account creation.");
+        setLoading(false);
+        return;
+      }
+
+      const isAdmin = userDoc.role === "Admin";
+      const hasOrgId = userDoc.organizationId && userDoc.organizationId.trim() !== "";
+      const hasRole = userDoc.role && userDoc.role.trim() !== "";
+      const hasUserRole = userDoc.userRole && userDoc.userRole.trim() !== "";
+
+      if (!isAdmin && (!hasOrgId || !hasRole || !hasUserRole)) {
+        await signOut(auth);
+        logAuthEvent({
+          type: "login_failed",
+          email,
+          userId: cred.user.uid,
+          success: false,
+          errorCode: "missing-org-info",
+          context: "email-password",
+        });
+        setError("Your account is missing organization data. Please contact SAS office.");
+        setLoading(false);
+        return;
+      }
+
       logAuthEvent({
         type: "login_success",
         email,
-        userId: cred?.user?.uid || null,
+        userId: cred.user.uid,
         success: true,
         context: "email-password",
       });
@@ -111,6 +150,26 @@ const AuthPage = () => {
           context: "google",
         });
         setError("No account found. Please contact SAS office for organization account creation.");
+        setLoading(false);
+        return;
+      }
+
+      const isAdmin = userDoc.role === "Admin";
+      const hasOrgId = userDoc.organizationId && userDoc.organizationId.trim() !== "";
+      const hasRole = userDoc.role && userDoc.role.trim() !== "";
+      const hasUserRole = userDoc.userRole && userDoc.userRole.trim() !== "";
+
+      if (!isAdmin && (!hasOrgId || !hasRole || !hasUserRole)) {
+        await signOut(auth);
+        logAuthEvent({
+          type: "google_login_failed",
+          email: user?.email || null,
+          userId: user?.uid || null,
+          success: false,
+          errorCode: "missing-org-info",
+          context: "google",
+        });
+        setError("Your account is missing organization data. Please contact SAS office.");
         setLoading(false);
         return;
       }
