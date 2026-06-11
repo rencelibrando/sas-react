@@ -12,6 +12,7 @@
     "server": "node server.js",
     "dev:all": "concurrently \"npm run server\" \"npm run dev\"",
     "build": "vite build",
+    "check:login": "node scripts/checkLoginNoOtp.js",
     "lint": "eslint .",
     "preview": "vite preview",
     "seed": "node scripts/seedTestData.js",
