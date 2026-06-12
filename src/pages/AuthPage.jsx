@@ -4,8 +4,10 @@ import { auth, googleProvider } from "../config/firebase";
 import { getUserById, getUserByEmail } from "../services/userService";
 import { sendOTP, verifyOTP } from "../services/otpService";
 import { resetPasswordViaAPI } from "../services/emailService";
-import { logAuthEvent } from "../services/authActivityLogService";
+import { logAuthEvent, checkAccountLockout } from "../services/authActivityLogService";
 import { validatePasswordStrength } from "../utils/passwordValidation";
+import PrivacyPolicyContent from "../components/PrivacyPolicyContent";
+import "./PrivacyPolicyPage.css";
 import earistLogo from "../assets/images/logos/earist-logo.png";
 import sasBanner from "../assets/images/banners/sas-banner.png";
 import "../styles/colors.css";
@@ -37,8 +39,19 @@ const AuthPage = () => {
   
   // Common state
   const [error, setError] = useState("");
+  // setInfo is intentionally not destructured — the message is set once on
+  // mount from sessionStorage and never needs to change afterward.
+  const [info] = useState(() => {
+    // Surface the idle-timeout notice once after auto-signout.
+    if (typeof window !== "undefined" && sessionStorage.getItem("idleSignedOut") === "1") {
+      sessionStorage.removeItem("idleSignedOut");
+      return "You were signed out due to 30 minutes of inactivity. Please sign in again.";
+    }
+    return "";
+  });
   const [loading, setLoading] = useState(false);
-  
+  const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
+
   // Restore OTP verification state if component remounts during verification
   useEffect(() => {
     const savedPendingAuth = sessionStorage.getItem("pendingAuth");
@@ -71,6 +84,26 @@ const AuthPage = () => {
     sessionStorage.removeItem("otpEmail");
 
     try {
+      // Step 0: Account-lockout check. Server-side scan of authActivityLog
+      // counts login_failed events for this email in the last 15 minutes;
+      // if there are 5+ we refuse the attempt and tell the user when to retry.
+      const lockout = await checkAccountLockout(email);
+      if (lockout?.locked) {
+        const minutes = Math.max(1, Math.ceil((lockout.retryAfterMs || 0) / 60000));
+        const msg = `Too many failed login attempts. Please try again in about ${minutes} minute${minutes === 1 ? "" : "s"}.`;
+        logAuthEvent({
+          type: "login_blocked",
+          email,
+          success: false,
+          errorCode: `lockout(${lockout.failedCount}/${lockout.threshold})`,
+          context: "pre-signin-lockout",
+        });
+        isVerifyingRef.current = false;
+        setError(msg);
+        setLoading(false);
+        return;
+      }
+
       // Step 1: Validate email and password by attempting sign-in
       // This will fail immediately if credentials are wrong
       let credentialsValid = false;
@@ -79,7 +112,7 @@ const AuthPage = () => {
         const authData = { type: "login", email, password };
         sessionStorage.setItem("pendingAuth", JSON.stringify(authData));
         sessionStorage.setItem("otpEmail", email);
-        
+
         await signInWithEmailAndPassword(auth, email, password);
         // Sign-in succeeded - credentials are valid
         // Sign out immediately (we'll sign in again after OTP verification)
@@ -322,8 +355,10 @@ const AuthPage = () => {
     setLoading(true);
 
     try {
-      const isValid = await verifyOTP(forgotPasswordEmail, forgotPasswordOTP);
-      
+      // Peek-validate: don't consume — /api/reset-password will validate +
+      // consume the same OTP when the user submits the new password.
+      const isValid = await verifyOTP(forgotPasswordEmail, forgotPasswordOTP, { consume: false });
+
       if (!isValid) {
         setError("Invalid OTP code. Please try again.");
         setLoading(false);
@@ -364,7 +399,7 @@ const AuthPage = () => {
       }
 
       try {
-        await resetPasswordViaAPI(forgotPasswordEmail, newPassword);
+        await resetPasswordViaAPI(forgotPasswordEmail, newPassword, forgotPasswordOTP);
         logAuthEvent({
           type: "password_reset_success",
           email: forgotPasswordEmail,
@@ -484,6 +519,7 @@ const AuthPage = () => {
                 </a>
               </div>
 
+              {info && !error && <div className="info-message">{info}</div>}
               {error && <div className="error-message">{error}</div>}
 
               <button
@@ -528,6 +564,18 @@ const AuthPage = () => {
             <div className="auth-help">
               <p className="help-text">
                 Need an account? Contact SAS office for organization account creation.
+              </p>
+              <p className="help-text">
+                <a
+                  href="#privacy"
+                  className="forgot-password-link"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setShowPrivacyPolicy(true);
+                  }}
+                >
+                  Privacy notice
+                </a>
               </p>
             </div>
           </div>
@@ -815,6 +863,34 @@ const AuthPage = () => {
                 </form>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {showPrivacyPolicy && (
+        <div
+          className="consent-modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setShowPrivacyPolicy(false)}
+        >
+          <div className="consent-modal" onClick={(e) => e.stopPropagation()}>
+            <header className="consent-modal-header">
+              <h2>Privacy Notice</h2>
+              <p>EARIST Student Affairs System (SAS) Portal</p>
+            </header>
+            <div className="consent-modal-body">
+              <PrivacyPolicyContent />
+            </div>
+            <div className="consent-modal-actions">
+              <button
+                type="button"
+                className="consent-accept"
+                onClick={() => setShowPrivacyPolicy(false)}
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

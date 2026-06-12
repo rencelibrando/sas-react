@@ -18,6 +18,7 @@ import {
   generateAndStoreEquipmentRequestPdf,
   getEquipmentRequestPdfUrl,
 } from "../services/equipmentPdfService";
+import { getOrganizationById, setBorrowingRestriction } from "../services/organizationService";
 import AdminLayout from "../components/admin/AdminLayout";
 import LoadingScreen from "../components/LoadingScreen";
 import {
@@ -36,6 +37,8 @@ const TABS = [
   { id: "returned", label: "Returned", status: EQUIPMENT_REQUEST_STATUS.RETURNED },
   { id: "revision", label: "Returned for Revision", status: EQUIPMENT_REQUEST_STATUS.RETURNED_FOR_REVISION },
   { id: "rejected", label: "Rejected", status: EQUIPMENT_REQUEST_STATUS.REJECTED },
+  // Cross-status virtual tab: filter on damageReported flag rather than status.
+  { id: "damaged", label: "Damage Reported", status: null, predicate: (r) => r.damageReported === true },
 ];
 
 const nowLocalInputValue = () => {
@@ -52,6 +55,7 @@ const AdminEquipmentRequests = () => {
   const [refreshKey, setRefreshKey] = useState(0);
 
   const [selected, setSelected] = useState(null);
+  const [selectedOrg, setSelectedOrg] = useState(null);
   const [history, setHistory] = useState([]);
   const [loadingDetail, setLoadingDetail] = useState(false);
 
@@ -100,6 +104,7 @@ const AdminEquipmentRequests = () => {
     for (const r of requests) {
       const tab = TABS.find((t) => t.status === r.status);
       if (tab) counts[tab.id] += 1;
+      if (r.damageReported === true) counts.damaged += 1;
     }
     return counts;
   }, [requests]);
@@ -113,6 +118,13 @@ const AdminEquipmentRequests = () => {
       ]);
       setSelected(req);
       setHistory(hist);
+      if (req?.organizationId) {
+        getOrganizationById(req.organizationId)
+          .then(setSelectedOrg)
+          .catch(() => setSelectedOrg(null));
+      } else {
+        setSelectedOrg(null);
+      }
     } catch (err) {
       console.error("Error loading detail:", err);
     } finally {
@@ -129,6 +141,25 @@ const AdminEquipmentRequests = () => {
       ]);
       setSelected(req);
       setHistory(hist);
+      if (req?.organizationId) {
+        getOrganizationById(req.organizationId)
+          .then(setSelectedOrg)
+          .catch(() => {});
+      }
+    }
+  };
+
+  const handleClearRestriction = async () => {
+    const adminId = auth.currentUser?.uid;
+    if (!adminId || !selected?.organizationId) return;
+    if (!window.confirm(`Clear the borrowing restriction for "${selectedOrg?.name || selected.organizationId}"? This will also reset their late return count.`)) return;
+    try {
+      await setBorrowingRestriction(selected.organizationId, false, adminId);
+      const updated = await getOrganizationById(selected.organizationId);
+      setSelectedOrg(updated);
+    } catch (err) {
+      console.error("Failed to clear restriction:", err);
+      alert(err.message || "Failed to clear restriction");
     }
   };
 
@@ -228,6 +259,7 @@ const AdminEquipmentRequests = () => {
   const filteredRequests = useMemo(() => {
     const tab = TABS.find((t) => t.id === activeTab);
     if (!tab) return requests;
+    if (typeof tab.predicate === "function") return requests.filter(tab.predicate);
     return requests.filter((r) => r.status === tab.status);
   }, [requests, activeTab]);
 
@@ -309,14 +341,14 @@ const AdminEquipmentRequests = () => {
         </div>
 
         {selected && (
-          <div className="modal-overlay" onClick={() => setSelected(null)}>
+          <div className="modal-overlay" onClick={() => { setSelected(null); setSelectedOrg(null); }}>
             <div
               className="modal-content modal-content-large"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="modal-header">
                 <h3>{selected.title}</h3>
-                <button className="modal-close" onClick={() => setSelected(null)}>×</button>
+                <button className="modal-close" onClick={() => { setSelected(null); setSelectedOrg(null); }}>×</button>
               </div>
               <div className="modal-body">
                 {loadingDetail ? (
@@ -325,7 +357,9 @@ const AdminEquipmentRequests = () => {
                   <AdminRequestDetail
                     request={selected}
                     history={history}
+                    orgData={selectedOrg}
                     onAction={openModal}
+                    onClearRestriction={handleClearRestriction}
                   />
                 )}
               </div>
@@ -550,7 +584,7 @@ const ACTION_CONFIRM = {
   markReturned: "Confirm Return",
 };
 
-const AdminRequestDetail = ({ request, history, onAction }) => {
+const AdminRequestDetail = ({ request, history, orgData, onAction, onClearRestriction }) => {
   const status = request.status;
 
   const handleDownloadPdf = async () => {
@@ -586,6 +620,27 @@ const AdminRequestDetail = ({ request, history, onAction }) => {
           <div className="info-row-full">
             <span className="info-label">Latest remarks:</span>
             <p className="info-remarks">{request.remarks}</p>
+          </div>
+        )}
+        {orgData?.borrowingRestricted && (
+          <div className="aer-restriction-notice">
+            <strong>Org Restricted:</strong> {orgData.name || "This organization"} is currently
+            restricted from new borrowing requests ({orgData.lateReturnCount || 0} late return
+            {(orgData.lateReturnCount || 0) !== 1 ? "s" : ""} on record).{" "}
+            <button className="aer-btn-clear-restriction" onClick={onClearRestriction}>
+              Clear Restriction
+            </button>
+          </div>
+        )}
+        {!orgData?.borrowingRestricted && (orgData?.lateReturnCount || 0) > 0 && (
+          <div className="aer-late-notice">
+            {orgData.name || "This organization"} has {orgData.lateReturnCount} late return
+            {orgData.lateReturnCount !== 1 ? "s" : ""} on record.
+          </div>
+        )}
+        {request.lateReturn && (
+          <div className="aer-late-notice">
+            This equipment was returned <strong>{request.lateDaysOverdue} day(s) late</strong>.
           </div>
         )}
         <div className="aer-detail-actions">

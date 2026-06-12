@@ -171,6 +171,35 @@ export const updateUserPassword = async (newPassword) => {
  * @param {string} newEmail - New email address
  * @returns {Promise<void>}
  */
+/**
+ * Stamp `privacyConsentAt` on the current user's doc. Called when the
+ * first-login ConsentModal is accepted.
+ */
+export const recordPrivacyConsent = async () => {
+  const user = auth.currentUser;
+  if (!user) throw new Error("User not authenticated");
+  const userRef = doc(db, "users", user.uid);
+  await updateDoc(userRef, {
+    privacyConsentAt: serverTimestamp(),
+    lastUpdated: serverTimestamp(),
+  });
+};
+
+/**
+ * Replace the user's notificationPreferences map. Pass the full
+ * { [category]: { inApp, email } } object. The caller is responsible for
+ * building it from DEFAULT_NOTIFICATION_PREFERENCES + their toggles.
+ */
+export const updateNotificationPreferences = async (preferences) => {
+  const user = auth.currentUser;
+  if (!user) throw new Error("User not authenticated");
+  const userRef = doc(db, "users", user.uid);
+  await updateDoc(userRef, {
+    notificationPreferences: preferences,
+    lastUpdated: serverTimestamp(),
+  });
+};
+
 export const updateUserEmail = async (newEmail) => {
   try {
     const user = auth.currentUser;

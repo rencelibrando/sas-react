@@ -97,3 +97,24 @@
 .er-items-table tbody tr:last-child td {
   border-bottom: none;
 }
+
+.eb-restriction-banner {
+  background: #fff0f0;
+  border: 1.5px solid #c0392b;
+  color: #7b1a1a;
+  border-radius: 8px;
+  padding: 0.85rem 1.1rem;
+  margin-bottom: 1rem;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.eb-late-warning {
+  background: #fffbe6;
+  border: 1.5px solid #f0c040;
+  color: #7a5800;
+  border-radius: 8px;
+  padding: 0.75rem 1.1rem;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}

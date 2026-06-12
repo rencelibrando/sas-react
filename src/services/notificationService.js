@@ -14,6 +14,7 @@ import {
   limit as queryLimit,
 } from "firebase/firestore";
 import { db } from "../config/firebase";
+import { apiJson } from "./apiClient.js";
 import {
   REPORT_STATUS,
   REPORT_TYPE_LABELS,
@@ -30,14 +31,133 @@ import {
  * Express backend (`/api/send-notification-email`).
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
-
 export const NOTIFICATION_TYPES = {
   REPORT_DUE_SOON: "report_due_soon",
   REPORT_OVERDUE: "report_overdue",
   REPORT_SUBMITTED: "report_submitted",
   REPORT_REVIEWED: "report_reviewed",
   REPORT_REVISION: "report_revision",
+  EQUIPMENT_RETURN_DUE_SOON: "equipment_return_due_soon",
+  EQUIPMENT_RETURN_OVERDUE: "equipment_return_overdue",
+  EQUIPMENT_DAMAGE_REPORTED: "equipment_damage_reported",
+  PROPOSAL_STAGE_ADVANCED: "proposal_stage_advanced",
+  PROPOSAL_RETURNED: "proposal_returned",
+  PROPOSAL_APPROVED: "proposal_approved",
+  PROPOSAL_COMMENT: "proposal_comment",
+  PROPOSAL_COMMENT_REPLY: "proposal_comment_reply",
+  EQUIPMENT_REQUEST_APPROVED: "equipment_request_approved",
+  EQUIPMENT_REQUEST_RETURNED: "equipment_request_returned",
+  EQUIPMENT_REQUEST_REJECTED: "equipment_request_rejected",
+  EQUIPMENT_RETURN_LATE: "equipment_return_late",
+  ORG_BORROWING_RESTRICTED: "org_borrowing_restricted",
+};
+
+// User-meaningful groupings used by the notification preferences UI. Each
+// notification type maps to a single category; the user toggles per-category,
+// not per-type.
+export const NOTIFICATION_CATEGORIES = {
+  report_deadlines: {
+    label: "Report deadlines",
+    description: "Reminders before and after a report is due.",
+    audience: "org",
+    types: [NOTIFICATION_TYPES.REPORT_DUE_SOON, NOTIFICATION_TYPES.REPORT_OVERDUE],
+  },
+  report_status: {
+    label: "Report status updates",
+    description: "When the SAS office reviews a report you submitted.",
+    audience: "org",
+    types: [NOTIFICATION_TYPES.REPORT_REVIEWED, NOTIFICATION_TYPES.REPORT_REVISION],
+  },
+  equipment_reminders: {
+    label: "Equipment return reminders",
+    description: "Reminders to return borrowed equipment on time.",
+    audience: "org",
+    types: [
+      NOTIFICATION_TYPES.EQUIPMENT_RETURN_DUE_SOON,
+      NOTIFICATION_TYPES.EQUIPMENT_RETURN_OVERDUE,
+    ],
+  },
+  proposal_updates: {
+    label: "Activity proposal updates",
+    description:
+      "Stage advances, returns for revision, and final approval of your proposals.",
+    audience: "org",
+    types: [
+      NOTIFICATION_TYPES.PROPOSAL_STAGE_ADVANCED,
+      NOTIFICATION_TYPES.PROPOSAL_RETURNED,
+      NOTIFICATION_TYPES.PROPOSAL_APPROVED,
+    ],
+  },
+  equipment_status: {
+    label: "Equipment request status",
+    description:
+      "Approval, revision, rejection, or borrowing restriction of your equipment requests.",
+    audience: "org",
+    types: [
+      NOTIFICATION_TYPES.EQUIPMENT_REQUEST_APPROVED,
+      NOTIFICATION_TYPES.EQUIPMENT_REQUEST_RETURNED,
+      NOTIFICATION_TYPES.EQUIPMENT_REQUEST_REJECTED,
+      NOTIFICATION_TYPES.ORG_BORROWING_RESTRICTED,
+    ],
+  },
+  proposal_comments: {
+    label: "Proposal comments",
+    description:
+      "New comments or replies from reviewing offices on your activity proposals.",
+    audience: "org",
+    types: [
+      NOTIFICATION_TYPES.PROPOSAL_COMMENT,
+      NOTIFICATION_TYPES.PROPOSAL_COMMENT_REPLY,
+    ],
+  },
+  admin_alerts: {
+    label: "Admin alerts",
+    description: "When organizations submit reports, or equipment is damaged or returned late.",
+    audience: "admin",
+    types: [
+      NOTIFICATION_TYPES.REPORT_SUBMITTED,
+      NOTIFICATION_TYPES.EQUIPMENT_DAMAGE_REPORTED,
+      NOTIFICATION_TYPES.EQUIPMENT_RETURN_LATE,
+    ],
+  },
+};
+
+const TYPE_TO_CATEGORY = Object.entries(NOTIFICATION_CATEGORIES).reduce(
+  (acc, [catId, cat]) => {
+    cat.types.forEach((t) => {
+      acc[t] = catId;
+    });
+    return acc;
+  },
+  {}
+);
+
+export const DEFAULT_NOTIFICATION_PREFERENCES = Object.keys(
+  NOTIFICATION_CATEGORIES
+).reduce((acc, catId) => {
+  acc[catId] = { inApp: true, email: true };
+  return acc;
+}, {});
+
+const getRecipientPrefs = async (recipientId) => {
+  try {
+    const snap = await getDoc(doc(db, "users", recipientId));
+    if (!snap.exists()) return null;
+    return snap.data().notificationPreferences || null;
+  } catch (err) {
+    console.warn("getRecipientPrefs failed:", err?.message || err);
+    return null;
+  }
+};
+
+// Resolve effective preference for a type+channel. Defaults to ON when the
+// user doc has no prefs set yet (back-compat for accounts created before
+// this feature).
+const effectivePref = (prefs, category, channel) => {
+  if (!category) return true;
+  const cat = prefs?.[category];
+  if (!cat) return DEFAULT_NOTIFICATION_PREFERENCES[category]?.[channel] ?? true;
+  return cat[channel] !== false;
 };
 
 export const REMINDER_TIERS = {
@@ -65,11 +185,11 @@ const daysBetween = (a, b) => {
 const sendNotificationEmail = async ({ to, subject, message, link }) => {
   if (!to) return;
   try {
-    await fetch(`${API_BASE}/api/send-notification-email`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ to, subject, message, link }),
-    });
+    await apiJson(
+      "/api/send-notification-email",
+      { to, subject, message, link },
+      { auth: true }
+    );
   } catch (err) {
     console.error("Email notification failed:", err);
   }
@@ -89,30 +209,46 @@ export const createNotification = async ({
   sourceId = null,
   reminderTier = null,
   alsoEmail = false,
+  overridePreferences = false,
 }) => {
   if (!recipientId) throw new Error("recipientId is required");
   if (!type) throw new Error("type is required");
 
-  const ref = doc(collection(db, "notifications"));
-  const data = {
-    notificationId: ref.id,
-    recipientId,
-    type,
-    title: title || "",
-    message: message || "",
-    link,
-    sourceCollection,
-    sourceId,
-    reminderTier,
-    isRead: false,
-    createdAt: serverTimestamp(),
-  };
+  // Honor recipient preferences unless explicitly overridden (reserved for
+  // future security/critical messages — currently nothing sets it).
+  const category = TYPE_TO_CATEGORY[type] || null;
+  const prefs = overridePreferences ? null : await getRecipientPrefs(recipientId);
+  const inAppAllowed = overridePreferences || effectivePref(prefs, category, "inApp");
+  const emailAllowed = overridePreferences || effectivePref(prefs, category, "email");
 
-  const batch = writeBatch(db);
-  batch.set(ref, data);
-  await batch.commit();
+  if (!inAppAllowed && !(alsoEmail && emailAllowed)) {
+    // User muted both channels for this category — nothing to do.
+    return null;
+  }
 
-  if (alsoEmail && recipientEmail) {
+  let id = null;
+  if (inAppAllowed) {
+    const ref = doc(collection(db, "notifications"));
+    const data = {
+      notificationId: ref.id,
+      recipientId,
+      type,
+      title: title || "",
+      message: message || "",
+      link,
+      sourceCollection,
+      sourceId,
+      reminderTier,
+      isRead: false,
+      createdAt: serverTimestamp(),
+    };
+    const batch = writeBatch(db);
+    batch.set(ref, data);
+    await batch.commit();
+    id = ref.id;
+  }
+
+  if (alsoEmail && emailAllowed && recipientEmail) {
     sendNotificationEmail({
       to: recipientEmail,
       subject: title,
@@ -121,7 +257,7 @@ export const createNotification = async ({
     });
   }
 
-  return ref.id;
+  return id;
 };
 
 /**
@@ -146,6 +282,38 @@ export const notifyOrganization = async (organizationId, payload) => {
 };
 
 /**
+ * Fan out a notification to all members of an organization, routed through
+ * the Express backend. Use this from non-admin signed-in clients (ISG, org
+ * users) who cannot enumerate the users collection — the backend uses the
+ * Admin SDK to bypass Firestore rules.
+ *
+ * Admins should prefer the direct `notifyOrganization` helper, which avoids
+ * the extra network hop.
+ */
+export const notifyOrganizationViaApi = async (organizationId, payload) => {
+  if (!organizationId || !payload?.type || !payload?.title) return;
+  try {
+    await apiJson(
+      "/api/notify-organization",
+      {
+        organizationId,
+        type: payload.type,
+        category: TYPE_TO_CATEGORY[payload.type] || null,
+        title: payload.title,
+        message: payload.message,
+        link: payload.link || null,
+        sourceCollection: payload.sourceCollection || null,
+        sourceId: payload.sourceId || null,
+        alsoEmail: !!payload.alsoEmail,
+      },
+      { auth: true }
+    );
+  } catch (err) {
+    console.error("notifyOrganizationViaApi backend call failed:", err);
+  }
+};
+
+/**
  * Fan out a notification to all admin users.
  *
  * Routed through the Express backend so callers that are NOT admins
@@ -155,18 +323,20 @@ export const notifyOrganization = async (organizationId, payload) => {
  */
 export const notifyAdmins = async (payload) => {
   try {
-    await fetch(`${API_BASE}/api/notify-admins`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    await apiJson(
+      "/api/notify-admins",
+      {
         type: payload.type,
+        category: TYPE_TO_CATEGORY[payload.type] || null,
         title: payload.title,
         message: payload.message,
         link: payload.link || null,
         sourceCollection: payload.sourceCollection || null,
         sourceId: payload.sourceId || null,
-      }),
-    });
+        alsoEmail: !!payload.alsoEmail,
+      },
+      { auth: true }
+    );
   } catch (err) {
     console.error("notifyAdmins backend call failed:", err);
   }

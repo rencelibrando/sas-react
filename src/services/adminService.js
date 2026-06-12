@@ -1,11 +1,13 @@
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   updateDoc,
   serverTimestamp
 } from "firebase/firestore";
 import { db } from "../config/firebase";
+import { logAdminAction } from "./adminActivityLogService";
 
 /**
  * Get dashboard statistics (proposals + incoming docs + account counts)
@@ -58,9 +60,20 @@ export const getDashboardStats = async () => {
 export const updateUserStatus = async (userId, status) => {
   try {
     const userRef = doc(db, "users", userId);
+    const before = await getDoc(userRef);
     await updateDoc(userRef, {
       status: status,
       lastUpdated: serverTimestamp()
+    });
+    logAdminAction({
+      type: "user_status_changed",
+      targetCollection: "users",
+      targetId: userId,
+      targetLabel: before.exists()
+        ? before.data().fullName || before.data().email || userId
+        : userId,
+      before: before.exists() ? { status: before.data().status } : null,
+      after: { status },
     });
     console.log(`User ${userId} status updated to ${status}`);
   } catch (error) {

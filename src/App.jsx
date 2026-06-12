@@ -1,10 +1,13 @@
-import { useState, useEffect, useRef } from "react";
-import { onAuthStateChanged } from "firebase/auth";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { onAuthStateChanged, signOut } from "firebase/auth";
 import { auth } from "./config/firebase";
-import { getUserById, updateLastLogin } from "./services/userService";
+import { useIdleTimeout } from "./utils/useIdleTimeout";
+import { getUserById, updateLastLogin, recordPrivacyConsent } from "./services/userService";
 import { getOrganizationById } from "./services/organizationService";
 import { checkAndFireReportReminders } from "./services/notificationService";
 import { markOverduePendingReports } from "./services/reportService";
+import { checkAndFireReviewTokenWarnings } from "./services/reviewTokenService";
+import { checkAndFireEquipmentReturnReminders } from "./services/equipmentRequestService";
 import AuthPage from "./pages/AuthPage";
 import HomePage from "./pages/HomePage";
 import AdminDashboard from "./pages/AdminDashboard";
@@ -24,7 +27,9 @@ import MemorandumsPage from "./pages/MemorandumsPage";
 import ReportsPage from "./pages/ReportsPage";
 import ProfilePage from "./pages/ProfilePage";
 import ReviewPage from "./pages/ReviewPage";
+import PrivacyPolicyPage from "./pages/PrivacyPolicyPage";
 import LoadingScreen from "./components/LoadingScreen";
+import ConsentModal from "./components/ConsentModal";
 import Chatbot from "./components/Chatbot/Chatbot";
 import "./App.css";
 
@@ -38,6 +43,7 @@ function App() {
   const [checkingRole, setCheckingRole] = useState(false);
   const [adminPage, setAdminPage] = useState("dashboard");
   const [currentPage, setCurrentPage] = useState("home");
+  const [privacyConsented, setPrivacyConsented] = useState(true);
   const lastLoginUpdatedRef = useRef(new Set());
 
   useEffect(() => {
@@ -58,18 +64,35 @@ function App() {
           const userDoc = await getUserById(currentUser.uid);
           if (userDoc) {
             setUserRole(userDoc.role || null);
+            setPrivacyConsented(!!userDoc.privacyConsentAt);
           } else {
             setUserRole(null);
+            setPrivacyConsented(true); // no doc yet — handled by hasOrgInfo gate
           }
           // Admin-only post-auth scans: promote overdue reports + fire deadline
           // reminder notifications. Org users can't enumerate the reports
           // collection (rules forbid it), so we gate by role. Non-blocking.
-          if (firstAuthThisSession && userDoc?.role === "Admin") {
+          // Skip admin background scans during the AuthPage credential-check
+          // flow — it briefly signs in then signs out, and the scans would
+          // fire requests after sign-out (yielding spurious permission
+          // errors). pendingAuth marks that flow.
+          const isCredentialCheck = sessionStorage.getItem("pendingAuth") !== null;
+          if (
+            firstAuthThisSession
+            && userDoc?.role === "Admin"
+            && !isCredentialCheck
+          ) {
             markOverduePendingReports().catch((err) =>
               console.error("markOverduePendingReports failed:", err)
             );
             checkAndFireReportReminders().catch((err) =>
               console.error("checkAndFireReportReminders failed:", err)
+            );
+            checkAndFireReviewTokenWarnings().catch((err) =>
+              console.error("checkAndFireReviewTokenWarnings failed:", err)
+            );
+            checkAndFireEquipmentReturnReminders().catch((err) =>
+              console.error("checkAndFireEquipmentReturnReminders failed:", err)
             );
           }
         } catch (error) {
@@ -126,6 +149,36 @@ function App() {
 
     checkOrgInfo();
   }, [user]);
+
+  const handleIdleTimeout = useCallback(async () => {
+    if (!auth.currentUser) return;
+    sessionStorage.setItem("idleSignedOut", "1");
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.error("Idle sign-out failed:", err);
+    }
+  }, []);
+
+  useIdleTimeout(30, handleIdleTimeout, { enabled: !!user });
+
+  const handleConsentAccept = useCallback(async () => {
+    try {
+      await recordPrivacyConsent();
+      setPrivacyConsented(true);
+    } catch (err) {
+      console.error("Failed to record privacy consent:", err);
+      alert("Could not save consent. Please try again.");
+    }
+  }, []);
+
+  const handleConsentDecline = useCallback(async () => {
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.error("Sign-out on consent decline failed:", err);
+    }
+  }, []);
 
   useEffect(() => {
     const handleAdminNavigate = (event) => {
@@ -200,6 +253,9 @@ function App() {
       case "reports":
         pageElement = <AdminReports />;
         break;
+      case "privacy":
+        pageElement = <PrivacyPolicyPage />;
+        break;
       case "dashboard":
       default:
         pageElement = <AdminDashboard />;
@@ -234,6 +290,9 @@ function App() {
       case "profile":
         pageElement = <ProfilePage orgType={orgType} />;
         break;
+      case "privacy":
+        pageElement = <PrivacyPolicyPage />;
+        break;
       case "home":
       default:
         pageElement = orgType === "ISG" ? <ISGEndorsementPage /> : <HomePage />;
@@ -245,6 +304,9 @@ function App() {
     <>
       <div className="App">{pageElement}</div>
       <Chatbot user={user} userRole={userRole} orgType={orgType} />
+      {!privacyConsented && (
+        <ConsentModal onAccept={handleConsentAccept} onDecline={handleConsentDecline} />
+      )}
     </>
   );
 }

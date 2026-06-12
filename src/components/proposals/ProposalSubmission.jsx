@@ -17,7 +17,18 @@ const ALLOWED_TYPES = [
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ];
 
+// Returns today's date + `days` days formatted as YYYY-MM-DD (local time)
+const getMinActivityDate = (days = 16) => {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+};
+
 const ProposalSubmission = ({ onSuccess, onCancel, organizationId, orgType }) => {
+  const minActivityDate = getMinActivityDate(16); // must be > 15 days from today
   const isISG = isISGSubmitter(orgType);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -89,6 +100,12 @@ const ProposalSubmission = ({ onSuccess, onCancel, organizationId, orgType }) =>
     }
     if (!activityDate) {
       setError("Please select the activity date.");
+      return;
+    }
+    if (activityDate < minActivityDate) {
+      setError(
+        "The activity date must be at least 15 days from today. Please select a later date."
+      );
       return;
     }
     if (activityEndDate && activityEndDate < activityDate) {
@@ -200,11 +217,19 @@ const ProposalSubmission = ({ onSuccess, onCancel, organizationId, orgType }) =>
                 id="activityDate"
                 className="form-input"
                 value={activityDate}
-                onChange={(e) => setActivityDate(e.target.value)}
+                min={minActivityDate}
+                onChange={(e) => {
+                  const newDate = e.target.value;
+                  setActivityDate(newDate);
+                  // Clear end date if it's now before the new start date
+                  if (activityEndDate && activityEndDate < newDate) {
+                    setActivityEndDate("");
+                  }
+                }}
                 disabled={loading}
               />
               <span className="form-hint">
-                Used to schedule post-activity report deadlines.
+                Must be at least 15 days from today (earliest: {minActivityDate}).
               </span>
             </div>
             <div className="form-group" style={{ flex: 1 }}>
@@ -218,10 +243,12 @@ const ProposalSubmission = ({ onSuccess, onCancel, organizationId, orgType }) =>
                 value={activityEndDate}
                 onChange={(e) => setActivityEndDate(e.target.value)}
                 min={activityDate || undefined}
-                disabled={loading}
+                disabled={loading || !activityDate}
               />
               <span className="form-hint">
-                Optional — leave blank for single-day events.
+                {activityDate
+                  ? "Optional — leave blank for single-day events."
+                  : "Select an Activity Date first."}
               </span>
             </div>
           </div>

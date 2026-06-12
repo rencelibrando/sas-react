@@ -23,6 +23,7 @@ import {
   sendReviewLinkEmail,
   sendAdditionalDocRequestEmail,
 } from "../services/emailService";
+import { apiJson } from "../services/apiClient";
 import AdminLayout from "../components/admin/AdminLayout";
 import LoadingScreen from "../components/LoadingScreen";
 import DocumentPreviewModal from "../components/documents/DocumentPreviewModal";
@@ -291,6 +292,7 @@ const AdminActivityProposals = () => {
 
   // Release to ISG (sas_release stage)
   const [releaseLoading, setReleaseLoading] = useState(false);
+  const [regenerateLoading, setRegenerateLoading] = useState(false);
 
   // Additional document requests (sas_review stage only)
   const [showAddRequestForm, setShowAddRequestForm] = useState(false);
@@ -723,6 +725,46 @@ const AdminActivityProposals = () => {
     }
   };
 
+  const handleRegenerateReviewLink = async () => {
+    if (!selectedProposal) return;
+    const stage = selectedProposal.pipeline?.currentStage;
+    if (!stage) return;
+    const ok = window.confirm(
+      `Regenerate the review link for ${STAGE_LABELS[stage] || stage}? The previous link will be invalidated and a new email will be sent.`
+    );
+    if (!ok) return;
+
+    setRegenerateLoading(true);
+    setError("");
+    try {
+      const res = await apiJson(
+        "/api/admin/regenerate-review-token",
+        { documentId: selectedProposal.documentId, stage },
+        { auth: true }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to regenerate review link.");
+      }
+      const sentTo = data.sentTo ? ` (sent to ${data.sentTo})` : "";
+      const status = data.emailStatus === "sent"
+        ? `New review link sent${sentTo}.`
+        : `New review link minted but email failed to send — check server logs.`;
+      setSuccess(status);
+      await loadProposals();
+      try {
+        const fresh = await getDocumentById(selectedProposal.documentId);
+        if (fresh) await handleViewDetails(fresh);
+      } catch (refetchErr) {
+        console.error("Failed to refresh proposal after regenerate:", refetchErr);
+      }
+    } catch (err) {
+      setError(err.message || "Failed to regenerate review link.");
+    } finally {
+      setRegenerateLoading(false);
+    }
+  };
+
   const handleReturnToOrg = async () => {
     if (!returnRemarks.trim()) {
       setReturnError("Please provide a reason for returning the proposal.");
@@ -899,7 +941,16 @@ const AdminActivityProposals = () => {
                     const stage = proposal.pipeline?.currentStage;
                     return (
                       <tr key={proposal.documentId}>
-                        <td className="table-title">{proposal.title}</td>
+                        <td className="table-title">
+                          {proposal.title}
+                          {proposal.activityDate && (
+                            <div className="table-title-meta">
+                              📅 Activity: {formatDate(proposal.activityDate)}
+                              {proposal.activityEndDate &&
+                                ` – ${formatDate(proposal.activityEndDate)}`}
+                            </div>
+                          )}
+                        </td>
                         <td>
                           {proposal.organizationName || proposal.organizationId}
                         </td>
@@ -985,6 +1036,16 @@ const AdminActivityProposals = () => {
                               {formatDate(selectedProposal.dateSubmitted)}
                             </span>
                           </div>
+                          {selectedProposal.activityDate && (
+                            <div className="info-row">
+                              <span className="info-label">Activity Date:</span>
+                              <span className="info-value">
+                                {formatDate(selectedProposal.activityDate)}
+                                {selectedProposal.activityEndDate &&
+                                  ` – ${formatDate(selectedProposal.activityEndDate)}`}
+                              </span>
+                            </div>
+                          )}
                           {selectedProposal.description && (
                             <div className="info-row-full">
                               <span className="info-label">Description:</span>
@@ -1181,6 +1242,61 @@ const AdminActivityProposals = () => {
                                   title={unresolvedReviewerCount > 0 ? "Resolve all reviewer comments first" : ""}
                                 >
                                   {releaseButtonLabel}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })()}
+
+                        {/* Pending external review — token regeneration */}
+                        {["vpaa_review", "op_approval", "fms_review", "procurement_review"].includes(
+                          selectedProposal.pipeline?.currentStage
+                        ) && (() => {
+                          const stage = selectedProposal.pipeline.currentStage;
+                          const stages = selectedProposal.pipeline?.stages || [];
+                          const activeStage = [...stages]
+                            .reverse()
+                            .find((s) => s?.stage === stage && s?.completedAt == null);
+                          const expiresMs =
+                            activeStage?.tokenExpiresAt?.toDate
+                              ? activeStage.tokenExpiresAt.toDate().getTime()
+                              : activeStage?.tokenExpiresAt
+                                ? new Date(activeStage.tokenExpiresAt).getTime()
+                                : null;
+                          const expired = expiresMs != null && expiresMs < Date.now();
+                          const viewed = activeStage?.firstViewedAt != null;
+                          return (
+                            <div className="sas-review-actions">
+                              <h4 className="actions-section-title">
+                                {STAGE_LABELS[stage] || stage} — Pending External Review
+                              </h4>
+                              <p className="forward-instruction">
+                                A one-time review link was emailed to this office.
+                                {viewed
+                                  ? " The office has opened it."
+                                  : " The office hasn't opened it yet."}
+                                {expiresMs != null && (
+                                  <>
+                                    {" "}Link {expired ? "expired" : "expires"}: <strong>{formatDateTime(activeStage.tokenExpiresAt)}</strong>.
+                                  </>
+                                )}
+                              </p>
+                              {expired && (
+                                <div className="comment-gate-banner">
+                                  ⚠ The review link has expired. Regenerate to send a new one.
+                                </div>
+                              )}
+                              <div className="action-buttons-row">
+                                <button
+                                  className="btn-forward"
+                                  onClick={handleRegenerateReviewLink}
+                                  disabled={regenerateLoading}
+                                >
+                                  {regenerateLoading
+                                    ? "Regenerating..."
+                                    : expired
+                                      ? "Regenerate review link"
+                                      : "Resend review link"}
                                 </button>
                               </div>
                             </div>

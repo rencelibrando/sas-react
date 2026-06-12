@@ -120,14 +120,15 @@ const EquipmentItemPicker = ({ value = [], onChange }) => {
               ? "All items added"
               : "Choose an item to add…"}
           </option>
-          {availableCatalog.map((it) => (
-            <option key={it.equipmentId} value={it.equipmentId}>
-              {it.name} ({EQUIPMENT_CATEGORY_LABELS[it.category] || it.category})
-              {typeof it.totalQuantity === "number"
-                ? ` — ${it.totalQuantity} on hand`
-                : ""}
-            </option>
-          ))}
+          {availableCatalog.map((it) => {
+            const avail = it.quantityOnHand ?? it.totalQuantity;
+            return (
+              <option key={it.equipmentId} value={it.equipmentId}>
+                {it.name} ({EQUIPMENT_CATEGORY_LABELS[it.category] || it.category})
+                {typeof avail === "number" ? ` — ${avail} available` : ""}
+              </option>
+            );
+          })}
         </select>
         <input
           type="number"
@@ -167,17 +168,17 @@ const EquipmentItemPicker = ({ value = [], onChange }) => {
           </div>
           {selectedRows.map((row) => {
             const catalogItem = catalogById.get(row.equipmentId);
-            const overLimit =
-              catalogItem &&
-              typeof catalogItem.totalQuantity === "number" &&
-              row.quantity > catalogItem.totalQuantity;
+            const availableQty = catalogItem
+              ? (catalogItem.quantityOnHand ?? catalogItem.totalQuantity ?? 0)
+              : 0;
+            const overLimit = catalogItem && row.quantity > availableQty;
             return (
               <div className="picker-row" key={row.equipmentId}>
                 <div className="picker-row-name">
                   <div>{row.name}</div>
                   {overLimit && (
                     <div className="picker-row-warn">
-                      Exceeds {catalogItem.totalQuantity} on hand
+                      Exceeds {availableQty} available
                     </div>
                   )}
                 </div>

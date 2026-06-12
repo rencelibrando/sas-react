@@ -8,6 +8,34 @@
   font-size: 0.9rem;
 }
 
+.activity-log-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin: 1rem 0 0.75rem;
+  border-bottom: 1px solid #e2d9c5;
+}
+
+.activity-log-tab {
+  background: transparent;
+  border: none;
+  padding: 0.6rem 1.1rem;
+  font-size: 0.9rem;
+  color: #6b6b6b;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.activity-log-tab:hover {
+  color: #800020;
+}
+
+.activity-log-tab.active {
+  color: #800020;
+  border-bottom-color: #800020;
+  font-weight: 600;
+}
+
 .activity-log-types {
   flex: 1 1 100%;
 }

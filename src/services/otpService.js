@@ -1,29 +1,17 @@
 import {
   doc,
   setDoc,
-  getDoc,
-  deleteDoc,
-  serverTimestamp
+  serverTimestamp,
 } from "firebase/firestore";
 import { db } from "../config/firebase";
 import { sendOTPEmail } from "./emailService";
 import { logAuthEvent } from "./authActivityLogService";
+import { apiJson } from "./apiClient";
 
-/**
- * Generate a 6-digit OTP code
- * @returns {string} 6-digit OTP
- */
 const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-/**
- * Store OTP in Firestore with expiration
- * @param {string} email - User's email
- * @param {string} otp - OTP code
- * @param {number} expiresInMinutes - Expiration time in minutes (default: 10)
- * @returns {Promise<void>}
- */
 const storeOTP = async (email, otp, expiresInMinutes = 10) => {
   try {
     const otpRef = doc(db, "otps", email);
@@ -31,11 +19,11 @@ const storeOTP = async (email, otp, expiresInMinutes = 10) => {
     expiresAt.setMinutes(expiresAt.getMinutes() + expiresInMinutes);
 
     await setDoc(otpRef, {
-      otp: otp,
-      email: email,
+      otp,
+      email,
       createdAt: serverTimestamp(),
-      expiresAt: expiresAt,
-      verified: false
+      expiresAt,
+      verified: false,
     });
   } catch (error) {
     console.error("Error storing OTP:", error);
@@ -43,56 +31,25 @@ const storeOTP = async (email, otp, expiresInMinutes = 10) => {
   }
 };
 
-/**
- * Verify OTP code
- * @param {string} email - User's email
- * @param {string} inputOTP - OTP code entered by user
- * @returns {Promise<boolean>} True if OTP is valid
- */
-export const verifyOTP = async (email, inputOTP) => {
+// Verifies via the Express backend. The client cannot read /otps/{email}
+// directly anymore — Firestore rules forbid it — so the server validates and
+// consumes the OTP using the Admin SDK.
+//
+// `consume = false` validates the OTP without deleting it — used by the
+// forgot-password step 1 so the OTP can be re-validated and consumed during
+// the final /api/reset-password call.
+export const verifyOTP = async (email, inputOTP, { consume = true } = {}) => {
   try {
-    const otpRef = doc(db, "otps", email);
-    const otpDoc = await getDoc(otpRef);
-
-    if (!otpDoc.exists()) {
-      return false;
-    }
-
-    const otpData = otpDoc.data();
-    const now = new Date();
-    const expiresAt = otpData.expiresAt?.toDate();
-
-    // Check if OTP is expired
-    if (expiresAt && now > expiresAt) {
-      await deleteDoc(otpRef);
-      logAuthEvent({
-        type: "otp_failed",
-        email,
-        success: false,
-        errorCode: "expired",
-      });
-      return false;
-    }
-
-    // Check if OTP matches
-    if (otpData.otp === inputOTP && !otpData.verified) {
-      // Mark as verified and delete
-      await deleteDoc(otpRef);
-      logAuthEvent({
-        type: "otp_verified",
-        email,
-        success: true,
-      });
-      return true;
-    }
-
+    const res = await apiJson("/api/verify-otp", { email, otp: inputOTP, consume });
+    const data = await res.json().catch(() => ({}));
+    const ok = !!data.valid;
     logAuthEvent({
-      type: "otp_failed",
+      type: ok ? "otp_verified" : "otp_failed",
       email,
-      success: false,
-      errorCode: "mismatch",
+      success: ok,
+      errorCode: ok ? undefined : data.reason || "verify-failed",
     });
-    return false;
+    return ok;
   } catch (error) {
     console.error("Error verifying OTP:", error);
     logAuthEvent({
@@ -105,25 +62,12 @@ export const verifyOTP = async (email, inputOTP) => {
   }
 };
 
-/**
- * Send OTP to user's email
- * @param {string} email - User's email address
- * @returns {Promise<string>} The OTP code (for testing purposes)
- */
 export const sendOTP = async (email) => {
   try {
-    // Generate OTP
     const otp = generateOTP();
-
-    // Store OTP in Firestore
     await storeOTP(email, otp);
-
-    // Send OTP via email
     await sendOTPEmail(email, otp);
-
     logAuthEvent({ type: "otp_sent", email, success: true });
-
-    // Return OTP for development/testing (remove in production)
     return otp;
   } catch (error) {
     console.error("Error sending OTP:", error);
@@ -137,11 +81,6 @@ export const sendOTP = async (email) => {
   }
 };
 
-/**
- * Clean up expired OTPs (can be called periodically)
- */
 export const cleanupExpiredOTPs = async () => {
-  // This would require a Cloud Function or scheduled job
-  // For now, OTPs are checked on verification
+  // No-op — server-side TTL cleanup recommended via a scheduled job if needed.
 };
-

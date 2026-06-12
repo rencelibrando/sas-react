@@ -17,6 +17,36 @@ import { db, storage } from "../config/firebase";
 import { getUserById } from "./userService";
 import { getRequiredKeys, REQUIREMENT_LABELS } from "../utils/proposalConstants";
 import { createReportRequirements } from "./reportService";
+import { logAdminAction } from "./adminActivityLogService";
+import {
+  notifyOrganization,
+  NOTIFICATION_TYPES,
+} from "./notificationService";
+
+/**
+ * Fire a proposal-update notification to the requesting organization.
+ * Fire-and-forget: never blocks the main mutation if the notification fails.
+ */
+const notifyProposalUpdate = ({
+  organizationId,
+  documentId,
+  type,
+  title,
+  message,
+}) => {
+  if (!organizationId) return;
+  notifyOrganization(organizationId, {
+    type,
+    title,
+    message,
+    link: "activity-proposals",
+    sourceCollection: "documents",
+    sourceId: documentId,
+    alsoEmail: true,
+  }).catch((err) =>
+    console.warn("proposal notification failed:", err?.message || err)
+  );
+};
 
 /**
  * Document Service
@@ -764,7 +794,16 @@ export const releaseDocument = async (documentId, adminId) => {
     });
 
     await batch.commit();
-    
+
+    if (documentData.documentType === "Memorandum") {
+      logAdminAction({
+        type: "memorandum_released",
+        targetCollection: "documents",
+        targetId: documentId,
+        targetLabel: documentData.title || documentId,
+      });
+    }
+
     console.log(`Document ${documentId} released successfully`);
   } catch (error) {
     console.error("Error releasing document:", error);
@@ -1055,6 +1094,14 @@ export const endorseProposal = async (documentId, userId, remarks = "") => {
   });
 
   await batch.commit();
+
+  notifyProposalUpdate({
+    organizationId: data.organizationId,
+    documentId,
+    type: NOTIFICATION_TYPES.PROPOSAL_STAGE_ADVANCED,
+    title: `Proposal forwarded to SAS: ${data.title || ""}`.trim(),
+    message: `Your activity proposal "${data.title || documentId}" has been assessed by ISG and forwarded to SAS for review.`,
+  });
 };
 
 /**
@@ -1096,6 +1143,16 @@ export const returnProposalFromISG = async (documentId, userId, remarks) => {
   });
 
   await batch.commit();
+
+  notifyProposalUpdate({
+    organizationId: data.organizationId,
+    documentId,
+    type: NOTIFICATION_TYPES.PROPOSAL_RETURNED,
+    title: `Proposal returned for revision: ${data.title || ""}`.trim(),
+    message: `Your activity proposal "${data.title || documentId}" was returned by ISG for revision.${
+      remarks ? ` Reviewer remarks: ${remarks}` : ""
+    }`,
+  });
 };
 
 /**
@@ -1154,6 +1211,14 @@ export const markAsDistributed = async (documentId, userId) => {
   } catch (err) {
     console.error("Failed to create report requirements:", err);
   }
+
+  notifyProposalUpdate({
+    organizationId: data.organizationId,
+    documentId,
+    type: NOTIFICATION_TYPES.PROPOSAL_APPROVED,
+    title: `Proposal approved: ${data.title || ""}`.trim(),
+    message: `Your activity proposal "${data.title || documentId}" has been fully approved and distributed by ISG. You may now proceed with the planned activity.`,
+  });
 };
 
 /**
@@ -1269,6 +1334,22 @@ export const completeSASReview = async (documentId, adminId, endorsementFile) =>
 
   await batch.commit();
 
+  logAdminAction({
+    type: "proposal_forwarded_to_vpaa",
+    targetCollection: "documents",
+    targetId: documentId,
+    targetLabel: data.title || documentId,
+    remarks: "Endorsement letter generated; review link sent to VPAA",
+  });
+
+  notifyProposalUpdate({
+    organizationId: data.organizationId,
+    documentId,
+    type: NOTIFICATION_TYPES.PROPOSAL_STAGE_ADVANCED,
+    title: `Proposal forwarded to VPAA: ${data.title || ""}`.trim(),
+    message: `SAS has completed its review of your activity proposal "${data.title || documentId}" and forwarded it to the VPAA office.`,
+  });
+
   return { tokenId, fileUrl };
 };
 
@@ -1335,6 +1416,34 @@ export const releaseFromSASToISG = async (documentId, adminId) => {
   });
 
   await batch.commit();
+
+  logAdminAction({
+    type: "proposal_released",
+    targetCollection: "documents",
+    targetId: documentId,
+    targetLabel: data.title || documentId,
+    remarks: isISGSubmission
+      ? "ISG-submitted proposal approved"
+      : "Released to ISG for distribution",
+  });
+
+  if (isISGSubmission) {
+    notifyProposalUpdate({
+      organizationId: data.organizationId,
+      documentId,
+      type: NOTIFICATION_TYPES.PROPOSAL_APPROVED,
+      title: `Proposal approved: ${data.title || ""}`.trim(),
+      message: `Your activity proposal "${data.title || documentId}" has been approved by SAS. You may now proceed with the planned activity.`,
+    });
+  } else {
+    notifyProposalUpdate({
+      organizationId: data.organizationId,
+      documentId,
+      type: NOTIFICATION_TYPES.PROPOSAL_STAGE_ADVANCED,
+      title: `Proposal released to ISG: ${data.title || ""}`.trim(),
+      message: `SAS has released your activity proposal "${data.title || documentId}". ISG will distribute the approved copy back to your organization shortly.`,
+    });
+  }
 };
 
 /**
@@ -1376,6 +1485,24 @@ export const returnFromSAS = async (documentId, adminId, remarks) => {
   });
 
   await batch.commit();
+
+  logAdminAction({
+    type: "proposal_returned_from_sas",
+    targetCollection: "documents",
+    targetId: documentId,
+    targetLabel: data.title || documentId,
+    remarks: remarks || "Returned by SAS for revision",
+  });
+
+  notifyProposalUpdate({
+    organizationId: data.organizationId,
+    documentId,
+    type: NOTIFICATION_TYPES.PROPOSAL_RETURNED,
+    title: `Proposal returned for revision: ${data.title || ""}`.trim(),
+    message: `Your activity proposal "${data.title || documentId}" was returned by SAS for revision.${
+      remarks ? ` Reviewer remarks: ${remarks}` : ""
+    }`,
+  });
 };
 
 /**
@@ -1519,6 +1646,16 @@ export const createOutgoingDocument = async (documentData, file, adminId) => {
     });
 
     await batch.commit();
+
+    if (documentData.documentType === "Memorandum") {
+      logAdminAction({
+        type: "memorandum_created",
+        targetCollection: "documents",
+        targetId: documentId,
+        targetLabel: documentData.title.trim(),
+        remarks: documentData.orderNumber ? `Order #${documentData.orderNumber}` : null,
+      });
+    }
 
     console.log(`Outgoing document ${documentId} created successfully`);
 

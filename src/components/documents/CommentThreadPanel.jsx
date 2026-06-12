@@ -63,6 +63,10 @@ export default function CommentThreadPanel({
   viewerRole,
   canPost = true,
   canReplyOn = null,
+  // Used for tokenized reviewers (FMS/VPAA/OP/Procurement) that lack a uid —
+  // a comment is considered "mine" when its scope+stage match the viewer's.
+  authorScope = null,
+  documentStage = null,
 }) {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
 
@@ -227,16 +231,25 @@ export default function CommentThreadPanel({
 
         {sorted.map((c) => {
           const isActive = c.id === activeCommentId;
-          const isMine = currentUser?.uid && c.authorUid === currentUser.uid;
+          // Portal reviewers (SAS/ISG) are identified by uid; tokenized reviewers
+          // (FMS/VPAA/OP/Procurement) lack a uid, so fall back to matching their
+          // office scope + stage. The backend enforces the same predicate when
+          // resolving/deleting, so the UI can trust this gate.
+          const isMine = currentUser?.uid
+            ? c.authorUid === currentUser.uid
+            : !!authorScope &&
+              c.authorScope === authorScope &&
+              (!c.stage || c.stage === documentStage);
           const replies = c.replies || [];
-          const orgHasReplied = replies.some((r) => r.authorSide === "org");
           const selectable = isSelectable(c);
           const isSelected = selectedIds.has(c.id);
 
-          // Reviewer can resolve their own comment only after the org has replied.
-          // Already-resolved comments can be reopened by the original commenter (any time).
+          // Reviewer can resolve their own comment any time once they've
+          // received a reply OR if no reply is expected (e.g. they're closing
+          // a concern they no longer need addressed before approving).
+          // Already-resolved comments can be reopened by the original commenter.
           const canResolveNow =
-            isMine && viewerRole === "reviewer" && !c.resolved && orgHasReplied;
+            isMine && viewerRole === "reviewer" && !c.resolved;
           const canReopen =
             isMine && viewerRole === "reviewer" && c.resolved;
 

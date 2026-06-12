@@ -125,6 +125,30 @@ const ReviewPage = () => {
   const [sigError, setSigError] = useState("");
   const [previewTimestamp, setPreviewTimestamp] = useState(null);
   const sigFileInputRef = useRef(null);
+  const [unresolvedReviewerTotal, setUnresolvedReviewerTotal] = useState(0);
+  const [summaryReady, setSummaryReady] = useState(false);
+
+  // Poll the office's open-comment count so the Approve gate stays in sync
+  // with comments resolved inside the PDF preview modal. Token endpoints are
+  // already poll-based; reuse the same cadence.
+  const refreshCommentSummary = async (t = token) => {
+    if (!t) return;
+    try {
+      const r = await fetch(`${API_BASE_URL}/api/review/${encodeURIComponent(t)}/comment-summary`);
+      const data = await r.json();
+      if (r.ok && data.success) {
+        setUnresolvedReviewerTotal(data.unresolvedReviewerTotal || 0);
+        setSummaryReady(true);
+        return;
+      }
+      // Endpoint missing (e.g. backend not yet restarted) — fail closed so the
+      // gate can't be bypassed by an old server build.
+      setSummaryReady(false);
+    } catch (err) {
+      console.warn("comment-summary fetch failed:", err);
+      setSummaryReady(false);
+    }
+  };
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -151,6 +175,7 @@ const ReviewPage = () => {
           throw new Error(data?.error || "Failed to load review.");
         }
         setReview(data.review);
+        refreshCommentSummary(t);
       } catch (err) {
         setLoadError(err.message || "Failed to load review.");
       } finally {
@@ -159,6 +184,7 @@ const ReviewPage = () => {
     };
 
     fetchReview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadSignatureStatus = async () => {
@@ -260,6 +286,20 @@ const ReviewPage = () => {
     if (decision === "return" && !remarks.trim()) {
       setSubmitError("Please provide remarks before returning the proposal.");
       return;
+    }
+    if (decision === "approve") {
+      if (!summaryReady) {
+        setSubmitError(
+          "Unable to verify open comments — the backend may not be running the latest build. Restart the server (npm run dev:all) and reload this page."
+        );
+        return;
+      }
+      if (unresolvedReviewerTotal > 0) {
+        setSubmitError(
+          `You still have ${unresolvedReviewerTotal} unresolved comment${unresolvedReviewerTotal === 1 ? "" : "s"} on this proposal. Resolve them or return the proposal for revision before approving.`
+        );
+        return;
+      }
     }
     setSubmitError("");
     if (decision === "approve") {
@@ -406,6 +446,16 @@ const ReviewPage = () => {
                   </div>
                 )}
 
+                {decision === "approve" && unresolvedReviewerTotal > 0 && (
+                  <p className="review-form-error">
+                    ⚠ You still have {unresolvedReviewerTotal} unresolved
+                    {unresolvedReviewerTotal === 1 ? " comment" : " comments"} on
+                    this proposal. Resolve each one (open the affected file's
+                    comments panel) or return the proposal for revision before
+                    approving.
+                  </p>
+                )}
+
                 {submitError && <p className="review-form-error">{submitError}</p>}
 
                 {decision && (
@@ -414,7 +464,10 @@ const ReviewPage = () => {
                     className="review-btn review-btn-submit"
                     onClick={handleSubmit}
                     disabled={
-                      submitting || (decision === "return" && !remarks.trim())
+                      submitting ||
+                      (decision === "return" && !remarks.trim()) ||
+                      (decision === "approve" &&
+                        (!summaryReady || unresolvedReviewerTotal > 0))
                     }
                   >
                     {submitting
@@ -583,7 +636,10 @@ const ReviewPage = () => {
           }}
           viewerRole="reviewer"
           commentApi={token ? buildTokenCommentApi(token) : null}
-          onClose={() => setPreviewFile(null)}
+          onClose={() => {
+            setPreviewFile(null);
+            refreshCommentSummary();
+          }}
         />
       )}
     </div>

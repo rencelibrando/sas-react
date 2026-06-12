@@ -25,5 +25,8 @@ dist-ssr
 *.md
 *.claude
 
+# Secrets — never commit these
 serviceAccountKey.json
 .env
+.env.*
+!.env.example

@@ -2,6 +2,10 @@ import { useState, useEffect, useCallback } from "react";
 import { auth } from "../config/firebase";
 import { getUserById } from "../services/userService";
 import { getAuthActivityLog } from "../services/authActivityLogService";
+import {
+  getAdminActivityLog,
+  ADMIN_ACTION_LABELS,
+} from "../services/adminActivityLogService";
 import AdminLayout from "../components/admin/AdminLayout";
 import LoadingScreen from "../components/LoadingScreen";
 import { formatDateTime } from "../utils/formatters";
@@ -25,7 +29,7 @@ const EVENT_LABEL = {
   account_created: "Account created",
 };
 
-const TYPE_GROUPS = [
+const AUTH_TYPE_GROUPS = [
   {
     id: "login",
     label: "Login",
@@ -39,6 +43,45 @@ const TYPE_GROUPS = [
     types: ["password_reset_success", "password_reset_failed"],
   },
   { id: "account_created", label: "Account created", types: ["account_created"] },
+];
+
+const ADMIN_TYPE_GROUPS = [
+  {
+    id: "organizations",
+    label: "Organizations",
+    types: ["org_created", "org_updated", "org_deleted"],
+  },
+  {
+    id: "equipment",
+    label: "Equipment",
+    types: ["equipment_created", "equipment_updated", "equipment_deleted"],
+  },
+  {
+    id: "users",
+    label: "Users",
+    types: [
+      "user_role_changed",
+      "user_status_changed",
+      "user_deleted",
+      "account_created_by_admin",
+      "admin_password_reset",
+    ],
+  },
+  {
+    id: "memorandums",
+    label: "Memorandums",
+    types: ["memorandum_created", "memorandum_released"],
+  },
+  {
+    id: "proposals",
+    label: "Proposals",
+    types: [
+      "proposal_forwarded_to_vpaa",
+      "proposal_returned_from_sas",
+      "proposal_released",
+      "proposal_review_link_regenerated",
+    ],
+  },
 ];
 
 const toLocalISODate = (date) => {
@@ -59,6 +102,7 @@ const endOfDay = (yyyyMmDd) => {
 const AdminActivityLog = () => {
   const [userData, setUserData] = useState(null);
   const [bootLoading, setBootLoading] = useState(true);
+  const [view, setView] = useState("auth"); // "auth" | "admin"
 
   const today = new Date();
   const sevenDaysAgo = new Date();
@@ -66,8 +110,9 @@ const AdminActivityLog = () => {
   const [dateFrom, setDateFrom] = useState(toLocalISODate(sevenDaysAgo));
   const [dateTo, setDateTo] = useState(toLocalISODate(today));
 
+  const typeGroups = view === "admin" ? ADMIN_TYPE_GROUPS : AUTH_TYPE_GROUPS;
   const [selectedGroups, setSelectedGroups] = useState(
-    () => new Set(TYPE_GROUPS.map((g) => g.id))
+    () => new Set(AUTH_TYPE_GROUPS.map((g) => g.id))
   );
 
   const [entries, setEntries] = useState([]);
@@ -98,7 +143,8 @@ const AdminActivityLog = () => {
       setLoadingPage(true);
       setError("");
       try {
-        const { entries: page, lastDoc } = await getAuthActivityLog({
+        const fetcher = view === "admin" ? getAdminActivityLog : getAuthActivityLog;
+        const { entries: page, lastDoc } = await fetcher({
           from: startOfDay(dateFrom),
           to: endOfDay(dateTo),
           cursor: reset ? null : cursor,
@@ -113,8 +159,17 @@ const AdminActivityLog = () => {
         setLoadingPage(false);
       }
     },
-    [dateFrom, dateTo, cursor]
+    [dateFrom, dateTo, cursor, view]
   );
+
+  useEffect(() => {
+    // Reset filters + entries when switching tabs.
+    setSelectedGroups(new Set(typeGroups.map((g) => g.id)));
+    setEntries([]);
+    setCursor(null);
+    fetchPage({ reset: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
 
   useEffect(() => {
     fetchPage({ reset: true });
@@ -132,13 +187,13 @@ const AdminActivityLog = () => {
   };
 
   const activeTypes = new Set(
-    TYPE_GROUPS.filter((g) => selectedGroups.has(g.id)).flatMap((g) => g.types)
+    typeGroups.filter((g) => selectedGroups.has(g.id)).flatMap((g) => g.types)
   );
 
   const visibleEntries = entries.filter((e) => activeTypes.has(e.type));
 
   const resetFilters = () => {
-    setSelectedGroups(new Set(TYPE_GROUPS.map((g) => g.id)));
+    setSelectedGroups(new Set(typeGroups.map((g) => g.id)));
     const t = new Date();
     const start = new Date();
     start.setDate(t.getDate() - 6);
@@ -160,8 +215,27 @@ const AdminActivityLog = () => {
         <div className="admin-proposals-header">
           <h1 className="admin-proposals-title">Activity Log</h1>
           <p className="admin-activity-log-subtitle">
-            Authentication events — logins, logouts, OTPs, password resets, and account creations.
+            {view === "admin"
+              ? "Admin actions — organization, equipment, user, memorandum, and proposal changes."
+              : "Authentication events — logins, logouts, OTPs, password resets, and account creations."}
           </p>
+        </div>
+
+        <div className="activity-log-tabs">
+          <button
+            type="button"
+            className={`activity-log-tab ${view === "auth" ? "active" : ""}`}
+            onClick={() => setView("auth")}
+          >
+            Authentication
+          </button>
+          <button
+            type="button"
+            className={`activity-log-tab ${view === "admin" ? "active" : ""}`}
+            onClick={() => setView("admin")}
+          >
+            Admin actions
+          </button>
         </div>
 
         <div className="admin-proposals-filters">
@@ -189,7 +263,7 @@ const AdminActivityLog = () => {
             <div className="filter-group activity-log-types">
               <label className="filter-label">Event types</label>
               <div className="activity-log-chips">
-                {TYPE_GROUPS.map((g) => {
+                {typeGroups.map((g) => {
                   const active = selectedGroups.has(g.id);
                   return (
                     <button
@@ -224,6 +298,29 @@ const AdminActivityLog = () => {
             <div className="admin-proposals-empty">
               <p>No activity in this range.</p>
             </div>
+          ) : view === "admin" ? (
+            <table className="proposals-table">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Action</th>
+                  <th>Actor</th>
+                  <th>Target</th>
+                  <th>Details</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleEntries.map((entry) => (
+                  <tr key={entry.id}>
+                    <td>{entry.timestamp ? formatDateTime(entry.timestamp) : "—"}</td>
+                    <td>{ADMIN_ACTION_LABELS[entry.type] || entry.type}</td>
+                    <td>{entry.actorEmail || entry.actorUid || "—"}</td>
+                    <td>{entry.targetLabel || entry.targetId || "—"}</td>
+                    <td className="activity-log-details">{entry.remarks || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           ) : (
             <table className="proposals-table">
               <thead>

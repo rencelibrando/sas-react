@@ -11,6 +11,7 @@ import {
   getDocs
 } from "firebase/firestore";
 import { db } from "../config/firebase";
+import { apiJson } from "./apiClient";
 
 /**
  * Auth Activity Log Service
@@ -25,6 +26,7 @@ import { db } from "../config/firebase";
 export const AUTH_EVENT_TYPES = [
   "login_success",
   "login_failed",
+  "login_blocked",
   "logout",
   "google_login_success",
   "google_login_failed",
@@ -107,5 +109,24 @@ export const getAuthActivityLog = async ({ from, to, cursor = null, pageSize = 5
   } catch (error) {
     console.error("Error fetching auth activity log:", error);
     throw error;
+  }
+};
+
+/**
+ * Pre-login lockout check. Runs server-side via /api/check-lockout since
+ * unauthenticated clients can't read authActivityLog (admin-only).
+ *
+ * Returns `{ locked, retryAfterMs, failedCount, threshold, windowMs }`.
+ * Fails open: if the endpoint errors, returns `{ locked: false }`.
+ */
+export const checkAccountLockout = async (email) => {
+  try {
+    const res = await apiJson("/api/check-lockout", { email });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { locked: false };
+    return data;
+  } catch (err) {
+    console.warn("checkAccountLockout failed (fail-open):", err?.message || err);
+    return { locked: false };
   }
 };

@@ -287,16 +287,47 @@ service cloud.firestore {
     }
 
     // ── reviewTokens ───────────────────────────────────────────────────────
-    // Public read: tokenized review links are consumed without portal login.
-    // Application layer validates token authenticity and expiry.
+    // Tokenized review flow consumes tokens server-side via the Admin SDK.
+    // Clients should never load token docs by ID (a public read would expose
+    // unconsumed token IDs by enumeration). Admin reads are allowed only for
+    // the expiry-warning scan that runs on admin login.
     match /reviewTokens/{tokenId} {
-      allow read:   if true;
-      allow write:  if isAdmin();
+      allow read:  if isAdmin();
+      allow write: if isAdmin();
     }
 
     // ── otps ───────────────────────────────────────────────────────────────
+    // Clients may write OTP docs during pre-login / forgot-password (no auth
+    // session yet). Verification + deletion runs server-side via the Admin
+    // SDK; clients must NOT be able to read OTP codes back.
     match /otps/{email} {
-      allow read, write: if true;
+      allow create, update: if true;
+      allow read, delete:   if false;
+    }
+
+    // ── adminActivityLog ───────────────────────────────────────────────────
+    // Append-only log of admin CRUD/state-change actions (org, equipment,
+    // user, memorandum, proposal pipeline). Reads are admin-only. Writes are
+    // shape-validated `create` only — updates and deletes are forbidden so
+    // the audit trail is immutable.
+    match /adminActivityLog/{entryId} {
+      allow read: if isAdmin();
+
+      allow create: if isAdmin()
+                    && request.resource.data.type is string
+                    && request.resource.data.type in [
+                         'org_created', 'org_updated', 'org_deleted',
+                         'equipment_created', 'equipment_updated', 'equipment_deleted',
+                         'user_role_changed', 'user_status_changed', 'user_deleted',
+                         'memorandum_created', 'memorandum_released',
+                         'proposal_forwarded_to_vpaa', 'proposal_returned_from_sas',
+                         'proposal_released', 'proposal_review_link_regenerated',
+                         'account_created_by_admin', 'admin_password_reset'
+                       ]
+                    && request.resource.data.actorUid == request.auth.uid
+                    && request.resource.data.timestamp == request.time;
+
+      allow update, delete: if false;
     }
 
     // ── authActivityLog ────────────────────────────────────────────────────
@@ -310,7 +341,8 @@ service cloud.firestore {
 
       allow create: if request.resource.data.type is string
                     && request.resource.data.type in [
-                         'login_success', 'login_failed', 'logout',
+                         'login_success', 'login_failed', 'login_blocked',
+                         'logout',
                          'google_login_success', 'google_login_failed',
                          'otp_sent', 'otp_verified', 'otp_failed',
                          'password_reset_success', 'password_reset_failed',

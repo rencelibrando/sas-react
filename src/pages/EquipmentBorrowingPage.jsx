@@ -140,11 +140,29 @@ const EquipmentBorrowingPage = ({ orgType: orgTypeProp = null }) => {
           <LoadingScreen compact={true} />
         ) : (
           <div className="equipment-borrowing-page">
+            {organizationData?.borrowingRestricted && (
+              <div className="eb-restriction-banner">
+                <strong>Borrowing Restricted:</strong> Your organization has been
+                restricted from submitting new equipment borrowing requests due to
+                repeated late returns. Please contact the SAS office to resolve this.
+              </div>
+            )}
+            {!organizationData?.borrowingRestricted &&
+              (organizationData?.lateReturnCount || 0) > 0 && (
+                <div className="eb-late-warning">
+                  Your organization has{" "}
+                  <strong>{organizationData.lateReturnCount}</strong> late
+                  return(s) on record. Reaching {3} will result in a borrowing
+                  restriction.
+                </div>
+              )}
             <div className="page-header">
               <h1 className="page-title">Equipment Borrowing</h1>
               <button
                 className="btn-primary"
+                disabled={!!organizationData?.borrowingRestricted}
                 onClick={() => {
+                  if (organizationData?.borrowingRestricted) return;
                   setEditing(null);
                   setShowForm(true);
                 }}

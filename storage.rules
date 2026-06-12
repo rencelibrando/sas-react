@@ -2,42 +2,86 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
 
-    // All document files — single-file docs AND multi-file activity proposals.
-    // The {allPaths=**} wildcard matches any depth:
-    //   documents/{docId}/{fileName}              (other document types)
+    // ── Helpers ─────────────────────────────────────────────────────────────
+    function userDoc(uid) {
+      return firestore.get(/databases/(default)/documents/users/$(uid)).data;
+    }
+    function isAdminUser() {
+      return request.auth != null
+          && userDoc(request.auth.uid).role == 'Admin';
+    }
+    function docMeta(docId) {
+      return firestore.get(/databases/(default)/documents/documents/$(docId)).data;
+    }
+    function orgMeta(orgId) {
+      return firestore.get(/databases/(default)/documents/organizations/$(orgId)).data;
+    }
+    function isISGUser() {
+      return request.auth != null
+          && userDoc(request.auth.uid).role != 'Admin'
+          && userDoc(request.auth.uid).organizationId is string
+          && orgMeta(userDoc(request.auth.uid).organizationId).type == 'ISG';
+    }
+    function isAllowedDocContentType() {
+      return request.resource.contentType == 'application/pdf'
+          || request.resource.contentType == 'application/msword'
+          || request.resource.contentType == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+          || request.resource.contentType == 'image/jpeg'
+          || request.resource.contentType == 'image/jpg'
+          || request.resource.contentType == 'image/png'
+          || request.resource.contentType == 'image/webp';
+    }
+    function isAllowedReportContentType() {
+      return request.resource.contentType == 'application/pdf'
+          || request.resource.contentType == 'application/msword'
+          || request.resource.contentType == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    }
+
+    // ── Document files (scoped by org / role / release state) ───────────────
+    // Path shapes:
+    //   documents/{docId}/{fileName}              (single-file docs)
     //   documents/{docId}/{requirementKey}/{file}  (activity proposal files)
     match /documents/{documentId}/{allPaths=**} {
-      allow read: if request.auth != null;
+      allow read: if request.auth != null && (
+                       isAdminUser()
+                    // Uploader can always read back their own file. This is the
+                    // signal we use to authorize getDownloadURL() right after
+                    // uploadBytes(), since the Firestore doc that the next
+                    // clause checks against doesn't exist yet at submit time.
+                    || (resource != null && resource.metadata.uploadedBy == request.auth.uid)
+                    || (
+                         userDoc(request.auth.uid).organizationId is string
+                         && docMeta(documentId).organizationId == userDoc(request.auth.uid).organizationId
+                       )
+                    || (isISGUser() && docMeta(documentId).documentType == 'activity_proposal')
+                    || (docMeta(documentId).direction == 'outgoing' && docMeta(documentId).status == 'released')
+                  );
 
       allow write: if request.auth != null
                    && request.resource.size <= 50 * 1024 * 1024
-                   && (
-                        request.resource.contentType == 'application/pdf'
-                     || request.resource.contentType == 'application/msword'
-                     || request.resource.contentType == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-                     || request.resource.contentType == 'image/jpeg'
-                     || request.resource.contentType == 'image/jpg'
-                     || request.resource.contentType == 'image/png'
-                     || request.resource.contentType == 'image/webp'
-                      );
+                   && isAllowedDocContentType();
 
-      allow delete: if request.auth != null;
+      allow delete: if isAdminUser();
     }
 
-    // Post-activity reports (Accomplishment / Financial / Financial Statement).
-    //   reports/{reportId}/{file}
+    // ── Post-activity reports ───────────────────────────────────────────────
     match /reports/{reportId}/{allPaths=**} {
       allow read: if request.auth != null;
 
       allow write: if request.auth != null
                    && request.resource.size <= 50 * 1024 * 1024
-                   && (
-                        request.resource.contentType == 'application/pdf'
-                     || request.resource.contentType == 'application/msword'
-                     || request.resource.contentType == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-                      );
+                   && isAllowedReportContentType();
 
-      allow delete: if request.auth != null;
+      allow delete: if isAdminUser();
+    }
+
+    // ── Office signatures (uploaded via tokenized review flow / admin UI) ──
+    // Reads are open to authenticated users so the review and approval UIs can
+    // display the signature image. Writes happen server-side via the Admin SDK
+    // (multer pipeline) — clients have no need to write here directly.
+    match /office-signatures/{officeId}/{allPaths=**} {
+      allow read: if request.auth != null;
+      allow write, delete: if false;
     }
 
     // Deny everything else by default

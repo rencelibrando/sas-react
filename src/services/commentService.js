@@ -1,6 +1,7 @@
 import {
   collection,
   doc,
+  getDoc,
   addDoc,
   deleteDoc,
   updateDoc,
@@ -14,6 +15,80 @@ import {
   writeBatch,
 } from "firebase/firestore";
 import { db } from "../config/firebase";
+import {
+  notifyAdmins,
+  notifyOrganizationViaApi,
+  NOTIFICATION_TYPES,
+} from "./notificationService";
+
+/**
+ * Fire-and-forget notification fan-out after a portal-side comment or reply.
+ * - Submitter author → notify SAS admins so they don't miss the org's reply.
+ * - Reviewer author (SAS/ISG) → notify the requesting org via the backend so
+ *   ISG (which can't enumerate users) still works.
+ */
+const notifyCommentParticipants = async ({
+  documentId,
+  authorSide,
+  authorScope,
+  authorName,
+  text,
+  isReply,
+}) => {
+  if (!documentId) return;
+  try {
+    const snap = await getDoc(doc(db, "documents", documentId));
+    if (!snap.exists()) return;
+    const data = snap.data();
+    const trimmed = String(text || "").trim();
+    const preview = trimmed.length > 200 ? `${trimmed.slice(0, 200)}…` : trimmed;
+    const title = data.title || documentId;
+
+    if (authorSide === "org" || authorScope === "submitter") {
+      const heading = isReply
+        ? `Org reply on "${title}"`
+        : `Org comment on "${title}"`;
+      notifyAdmins({
+        type: isReply
+          ? NOTIFICATION_TYPES.PROPOSAL_COMMENT_REPLY
+          : NOTIFICATION_TYPES.PROPOSAL_COMMENT,
+        title: heading,
+        message: `${authorName || "An organization member"} ${
+          isReply ? "replied on a comment thread" : "left a comment"
+        } for "${title}":\n\n${preview}`,
+        link: "activity-proposals",
+        sourceCollection: "documents",
+        sourceId: documentId,
+        alsoEmail: true,
+      }).catch((err) =>
+        console.warn("comment → notifyAdmins failed:", err?.message || err)
+      );
+      return;
+    }
+
+    if (!data.organizationId) return;
+    const heading = isReply
+      ? `New reply on "${title}"`
+      : `New comment on "${title}"`;
+    notifyOrganizationViaApi(data.organizationId, {
+      type: isReply
+        ? NOTIFICATION_TYPES.PROPOSAL_COMMENT_REPLY
+        : NOTIFICATION_TYPES.PROPOSAL_COMMENT,
+      title: heading,
+      message: `${authorName || "A reviewing office"} ${
+        isReply ? "replied on a comment thread" : "left a comment"
+      } on your activity proposal:\n\n${preview}`,
+      link: "activity-proposals",
+      sourceCollection: "documents",
+      sourceId: documentId,
+      alsoEmail: true,
+    }).catch((err) =>
+      console.warn("comment → notifyOrganization failed:", err?.message || err)
+    );
+  } catch (err) {
+    console.warn("notifyCommentParticipants failed:", err?.message || err);
+  }
+};
 
 function commentsRef(documentId) {
   return collection(db, "documents", documentId, "comments");
@@ -136,7 +211,7 @@ export async function createComment({
 }) {
   if (!documentId || !requirementKey) throw new Error("documentId and requirementKey required");
   if (!text?.trim()) throw new Error("Comment text is required");
-  return addDoc(commentsRef(documentId), {
+  const result = await addDoc(commentsRef(documentId), {
     requirementKey,
     page,
     bbox,
@@ -150,6 +225,15 @@ export async function createComment({
     createdAt: serverTimestamp(),
     resolved: false,
   });
+  notifyCommentParticipants({
+    documentId,
+    authorSide,
+    authorScope,
+    authorName,
+    text,
+    isReply: false,
+  });
+  return result;
 }
 
 export async function resolveComment(documentId, commentId, resolved = true) {
@@ -196,7 +280,7 @@ export async function addReply({
   if (!text?.trim()) throw new Error("Reply text is required");
   // arrayUnion + serverTimestamp() can't be combined (Firestore rejects sentinels in arrays).
   // Use a client Timestamp instead — accuracy within a few seconds is fine for a comment reply.
-  return updateDoc(doc(db, "documents", documentId, "comments", commentId), {
+  const result = await updateDoc(doc(db, "documents", documentId, "comments", commentId), {
     replies: arrayUnion({
       text: text.trim(),
       authorUid,
@@ -207,4 +291,13 @@ export async function addReply({
       createdAt: Timestamp.now(),
     }),
   });
+  notifyCommentParticipants({
+    documentId,
+    authorSide,
+    authorScope,
+    authorName,
+    text,
+    isReply: true,
+  });
+  return result;
 }

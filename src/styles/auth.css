@@ -370,6 +370,17 @@
   border-left: 3px solid var(--error);
 }
 
+.info-message {
+  color: #6b4a00;
+  font-size: 0.875rem;
+  margin-top: 0.5rem;
+  text-align: left;
+  padding: 0.75rem;
+  background: rgba(255, 215, 0, 0.15);
+  border-radius: 6px;
+  border-left: 3px solid #b3870c;
+}
+
 @media (max-width: 768px) {
   .auth-card {
     padding: 1.5rem 1rem;

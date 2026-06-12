@@ -225,6 +225,13 @@
   color: var(--earist-maroon);
 }
 
+.table-title-meta {
+  font-weight: 400;
+  font-size: 0.78rem;
+  color: #6b6b6b;
+  margin-top: 2px;
+}
+
 .table-actions {
   display: flex;
   gap: 0.5rem;

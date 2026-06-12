@@ -301,6 +301,8 @@ export default function DocumentPreviewModal({
             viewerRole={viewerRole}
             canPost={canPost}
             canReplyOn={canReplyOn}
+            authorScope={authorScope}
+            documentStage={documentStage}
           />
         )}
       </div>

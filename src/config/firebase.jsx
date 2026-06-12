@@ -1,5 +1,10 @@
 import { initializeApp } from "firebase/app";
-import { getAuth, GoogleAuthProvider } from "firebase/auth";
+import {
+  getAuth,
+  GoogleAuthProvider,
+  setPersistence,
+  browserLocalPersistence,
+} from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 
@@ -15,6 +20,14 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
+
+// Explicit persistence — keeps the signed-in session across reloads but tied
+// to the device. Combined with the idle-timeout hook in App.jsx, abandoned
+// sessions are signed out after 30 minutes of inactivity.
+setPersistence(auth, browserLocalPersistence).catch((err) => {
+  console.warn("Firebase setPersistence failed:", err?.message || err);
+});
+
 export const googleProvider = new GoogleAuthProvider();
 export const db = getFirestore(app);
 export const storage = getStorage(app);

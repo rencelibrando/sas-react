@@ -295,6 +295,71 @@
   filter: brightness(0) saturate(100%) invert(11%) sepia(72%) saturate(4924%) hue-rotate(335deg) brightness(78%) contrast(112%);
 }
 
+/* ============ Notification preferences ============ */
+.notif-prefs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.notif-prefs-table thead th {
+  text-align: left;
+  padding: 0.6rem 0.85rem;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--gray);
+  border-bottom: 1px solid #ece5d0;
+}
+
+.notif-prefs-th {
+  text-align: center !important;
+  width: 90px;
+}
+
+.notif-prefs-table tbody td {
+  padding: 0.85rem;
+  border-bottom: 1px solid #f1ead5;
+}
+
+.notif-prefs-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.notif-prefs-cell {
+  text-align: center;
+}
+
+.notif-prefs-cell input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--earist-maroon);
+  cursor: pointer;
+}
+
+.notif-prefs-cell input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.notif-prefs-label {
+  font-weight: 600;
+  color: var(--earist-maroon);
+}
+
+.notif-prefs-desc {
+  color: var(--gray);
+  font-size: 0.82rem;
+  margin-top: 0.15rem;
+}
+
+.notif-prefs-status {
+  margin-top: 0.6rem;
+  font-size: 0.82rem;
+  color: var(--gray);
+  text-align: right;
+}
+
 /* ============ Account History strip ============ */
 .profile-card--strip .profile-history-grid {
   display: grid;

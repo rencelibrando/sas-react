@@ -8,8 +8,10 @@ import {
   orderBy,
   serverTimestamp,
   writeBatch,
+  increment,
 } from "firebase/firestore";
 import { db } from "../config/firebase";
+import { logAdminAction } from "./adminActivityLogService";
 
 /**
  * Equipment Service
@@ -78,6 +80,7 @@ export const createEquipment = async (payload, adminId) => {
     description,
     category,
     totalQuantity,
+    quantityOnHand: totalQuantity,
     condition,
     isActive: true,
     createdAt: serverTimestamp(),
@@ -86,6 +89,13 @@ export const createEquipment = async (payload, adminId) => {
     updatedBy: adminId,
   });
   await batch.commit();
+  logAdminAction({
+    type: "equipment_created",
+    targetCollection: "equipment",
+    targetId: equipRef.id,
+    targetLabel: name,
+    after: { name, category, totalQuantity, quantityOnHand: totalQuantity, condition },
+  });
   return { equipmentId: equipRef.id };
 };
 
@@ -118,6 +128,13 @@ export const updateEquipment = async (equipmentId, updates, adminId) => {
   }
   if (updates.totalQuantity !== undefined) {
     patch.totalQuantity = sanitizeQuantity(updates.totalQuantity);
+    // Keep quantityOnHand in sync when admin manually adjusts totalQuantity
+    // (only if quantityOnHand isn't already being managed by borrowing flow).
+    const existing = snap.data();
+    if (existing.quantityOnHand === undefined) {
+      // First-time migration: seed quantityOnHand from the old totalQuantity.
+      patch.quantityOnHand = patch.totalQuantity;
+    }
   }
   if (updates.condition !== undefined) {
     patch.condition = sanitizeText(updates.condition, 200);
@@ -126,9 +143,28 @@ export const updateEquipment = async (equipmentId, updates, adminId) => {
     patch.isActive = Boolean(updates.isActive);
   }
 
+  const before = snap.data();
   const batch = writeBatch(db);
   batch.update(ref, patch);
   await batch.commit();
+
+  const isToggleOnly =
+    Object.keys(updates).length === 1 && updates.isActive !== undefined;
+  logAdminAction({
+    type: isToggleOnly
+      ? (updates.isActive ? "equipment_updated" : "equipment_deleted")
+      : "equipment_updated",
+    targetCollection: "equipment",
+    targetId: equipmentId,
+    targetLabel: patch.name || before.name || null,
+    before: {
+      name: before.name,
+      category: before.category,
+      totalQuantity: before.totalQuantity,
+      isActive: before.isActive,
+    },
+    after: patch,
+  });
 };
 
 /**
@@ -137,6 +173,58 @@ export const updateEquipment = async (equipmentId, updates, adminId) => {
  */
 export const setEquipmentActive = async (equipmentId, isActive, adminId) => {
   return updateEquipment(equipmentId, { isActive }, adminId);
+};
+
+/**
+ * Atomically adjust the quantityOnHand for a single equipment item.
+ * delta > 0 means items are being returned (added back).
+ * delta < 0 means items are being borrowed (removed).
+ *
+ * Runs inside an existing WriteBatch when one is provided, otherwise commits
+ * immediately.
+ *
+ * @param {import('firebase/firestore').WriteBatch | null} batch  Existing batch or null.
+ * @param {string} equipmentId
+ * @param {number} delta  e.g. -2 to deduct 2, +2 to restore 2.
+ * @param {string} adminId
+ */
+export const adjustEquipmentQuantityOnHand = (batch, equipmentId, delta, adminId) => {
+  if (!equipmentId || delta === 0) return;
+  const ref = doc(db, "equipment", equipmentId);
+  const patch = {
+    quantityOnHand: increment(delta),
+    updatedAt: serverTimestamp(),
+    updatedBy: adminId,
+  };
+  if (batch) {
+    batch.update(ref, patch);
+  }
+  // When no batch is supplied callers should use the returned ref+patch
+  // to do a standalone update — not needed for our current use-cases.
+};
+
+/**
+ * Seed quantityOnHand for existing equipment documents that pre-date this
+ * field (one-time migration; safe to run multiple times).
+ * Call this once from an admin action or on app start.
+ */
+export const seedQuantityOnHand = async (adminId) => {
+  const snap = await getDocs(collection(db, "equipment"));
+  const batch = writeBatch(db);
+  let count = 0;
+  for (const d of snap.docs) {
+    const data = d.data();
+    if (data.quantityOnHand === undefined) {
+      batch.update(d.ref, {
+        quantityOnHand: sanitizeQuantity(data.totalQuantity),
+        updatedAt: serverTimestamp(),
+        updatedBy: adminId || "system",
+      });
+      count++;
+    }
+  }
+  if (count > 0) await batch.commit();
+  return count;
 };
 
 export const EQUIPMENT_CATEGORIES = VALID_CATEGORIES;

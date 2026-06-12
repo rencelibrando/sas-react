@@ -6,9 +6,11 @@ import {
   doc,
   getDoc,
   updateDoc,
-  serverTimestamp
+  serverTimestamp,
+  increment,
 } from "firebase/firestore";
 import { db } from "../config/firebase";
+import { logAdminAction } from "./adminActivityLogService";
 
 /**
  * Get all active organizations filtered by type
@@ -165,6 +167,45 @@ export const getAllOrganizationsForAdmin = async () => {
 };
 
 /**
+ * Increment the late-return counter for an org and return the updated doc data.
+ */
+export const recordLateReturn = async (organizationId) => {
+  if (!organizationId) return null;
+  const orgRef = doc(db, "organizations", organizationId);
+  await updateDoc(orgRef, {
+    lateReturnCount: increment(1),
+    lastUpdated: serverTimestamp(),
+  });
+  const snap = await getDoc(orgRef);
+  return snap.exists() ? snap.data() : null;
+};
+
+/**
+ * Set or clear the borrowing restriction on an org.
+ * Clearing also resets lateReturnCount to 0.
+ */
+export const setBorrowingRestriction = async (organizationId, restricted, adminId = null) => {
+  if (!organizationId) return;
+  const orgRef = doc(db, "organizations", organizationId);
+  const patch = restricted
+    ? { borrowingRestricted: true, borrowingRestrictedAt: serverTimestamp(), lastUpdated: serverTimestamp() }
+    : { borrowingRestricted: false, borrowingRestrictedAt: null, lateReturnCount: 0, lastUpdated: serverTimestamp() };
+  await updateDoc(orgRef, patch);
+  if (!restricted && adminId) {
+    const before = await getDoc(orgRef);
+    logAdminAction({
+      type: "org_updated",
+      targetCollection: "organizations",
+      targetId: organizationId,
+      targetLabel: before.exists() ? before.data().name || organizationId : organizationId,
+      before: { borrowingRestricted: true },
+      after: { borrowingRestricted: false, lateReturnCount: 0 },
+      remarks: "Borrowing restriction cleared by admin",
+    });
+  }
+};
+
+/**
  * Update organization status
  * @param {string} organizationId - Organization document ID
  * @param {string} status - "active" | "inactive"
@@ -173,9 +214,19 @@ export const getAllOrganizationsForAdmin = async () => {
 export const updateOrganizationStatus = async (organizationId, status) => {
   try {
     const orgRef = doc(db, "organizations", organizationId);
+    const before = await getDoc(orgRef);
     await updateDoc(orgRef, {
       status: status,
       lastUpdated: serverTimestamp()
+    });
+    logAdminAction({
+      type: "org_updated",
+      targetCollection: "organizations",
+      targetId: organizationId,
+      targetLabel: before.exists() ? before.data().name || organizationId : organizationId,
+      before: before.exists() ? { status: before.data().status } : null,
+      after: { status },
+      remarks: `Status changed to ${status}`,
     });
     console.log(`Organization ${organizationId} status updated to ${status}`);
   } catch (error) {

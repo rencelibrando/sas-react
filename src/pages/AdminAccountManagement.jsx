@@ -4,20 +4,17 @@ import {
   getUserById,
   getAllOrgUsers,
   getAllAdminUsers,
-  createUserDocument,
-  createOrganizationAccount,
 } from "../services/userService";
 import { getAllOrganizations } from "../services/organizationService";
 import { updateUserStatus } from "../services/adminService";
 import { getAllOfficeProfiles, upsertOfficeProfile } from "../services/officeService";
 import { logAuthEvent } from "../services/authActivityLogService";
+import { apiJson } from "../services/apiClient";
 import AdminLayout from "../components/admin/AdminLayout";
 import LoadingScreen from "../components/LoadingScreen";
 import { generateSecurePassword } from "../utils/passwordGenerator";
 import "../styles/colors.css";
 import "./AdminAccountManagement.css";
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
 
 const INITIAL_CREATE_FORM = {
   accountCategory: "org", // "org" | "admin"
@@ -282,30 +279,21 @@ const AdminAccountManagement = () => {
 
     setSubmitting(true);
     try {
-      const createRes = await fetch(`${API_BASE_URL}/api/create-account`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim(), password }),
-      });
+      const createRes = await apiJson(
+        "/api/create-account",
+        {
+          accountCategory,
+          email: email.trim(),
+          password,
+          fullName: fullName.trim(),
+          organizationId: accountCategory === "org" ? organizationId : "",
+          orgType: accountCategory === "org" ? orgType : "",
+          position: accountCategory === "admin" ? position.trim() : "",
+        },
+        { auth: true }
+      );
       const createData = await createRes.json();
       if (!createData.success) throw new Error(createData.error || "Failed to create account");
-
-      if (accountCategory === "admin") {
-        await createUserDocument(createData.uid, {
-          fullName: fullName.trim(),
-          email: email.trim(),
-          role: "Admin",
-          organizationId: "",
-          userRole: position.trim() || "SAS Staff",
-        });
-      } else {
-        await createOrganizationAccount(createData.uid, {
-          email: email.trim(),
-          role: orgType,
-          organizationId,
-          organizationName: fullName.trim(),
-        });
-      }
 
       if (createForm.sendEmail) {
         const displayName =
@@ -313,16 +301,16 @@ const AdminAccountManagement = () => {
             ? `${fullName.trim()}${position.trim() ? ` — ${position.trim()}` : ""}`
             : fullName.trim();
 
-        await fetch(`${API_BASE_URL}/api/send-credentials`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        await apiJson(
+          "/api/send-credentials",
+          {
             to: email.trim(),
             email: email.trim(),
             password,
             organizationName: displayName,
-          }),
-        });
+          },
+          { auth: true }
+        );
       }
 
       logAuthEvent({
@@ -352,11 +340,11 @@ const AdminAccountManagement = () => {
 
     setSubmitting(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/admin-reset-password`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: selectedAccount.email, newPassword: resetPassword }),
-      });
+      const res = await apiJson(
+        "/api/admin-reset-password",
+        { email: selectedAccount.email, newPassword: resetPassword },
+        { auth: true }
+      );
       const data = await res.json();
       if (!data.success) throw new Error(data.error || "Failed to reset password");
 

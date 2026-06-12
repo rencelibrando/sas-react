@@ -1,8 +1,14 @@
 import { useState, useEffect } from "react";
 import { auth } from "../config/firebase";
 import { signOut } from "firebase/auth";
-import { getUserById, updateUserPassword, updateUserEmail, deleteUserAccount } from "../services/userService";
+import { getUserById, updateUserPassword, updateUserEmail, deleteUserAccount, updateNotificationPreferences } from "../services/userService";
 import { getOrganizationById } from "../services/organizationService";
+import { sendOTP, verifyOTP } from "../services/otpService";
+import {
+  NOTIFICATION_CATEGORIES,
+  DEFAULT_NOTIFICATION_PREFERENCES,
+} from "../services/notificationService";
+import { apiJson } from "../services/apiClient";
 import AdminLayout from "../components/admin/AdminLayout";
 import LoadingScreen from "../components/LoadingScreen";
 import Icon from "../components/Icon";
@@ -36,6 +42,12 @@ const AdminProfilePage = () => {
   const [emailError, setEmailError] = useState("");
   const [emailSuccess, setEmailSuccess] = useState("");
   const [updatingEmail, setUpdatingEmail] = useState(false);
+  const [emailOtpSent, setEmailOtpSent] = useState(false);
+  const [emailOtpCode, setEmailOtpCode] = useState("");
+
+  const [prefs, setPrefs] = useState(DEFAULT_NOTIFICATION_PREFERENCES);
+  const [prefsSaving, setPrefsSaving] = useState(false);
+  const [prefsMessage, setPrefsMessage] = useState("");
 
   const [showDangerZone, setShowDangerZone] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -56,6 +68,10 @@ const AdminProfilePage = () => {
 
         setUserData(userDoc);
         setEmailValue(user.email || "");
+        setPrefs({
+          ...DEFAULT_NOTIFICATION_PREFERENCES,
+          ...(userDoc?.notificationPreferences || {}),
+        });
 
         if (userDoc?.organizationId) {
           const orgDoc = await getOrganizationById(userDoc.organizationId);
@@ -107,20 +123,69 @@ const AdminProfilePage = () => {
     }
   };
 
-  const handleEmailUpdate = async (e) => {
+  const cancelEmailEdit = () => {
+    setIsEditingEmail(false);
+    setEmailValue(auth.currentUser?.email || "");
+    setEmailError("");
+    setEmailSuccess("");
+    setEmailOtpSent(false);
+    setEmailOtpCode("");
+  };
+
+  const handleEmailRequestOTP = async (e) => {
     e.preventDefault();
     setEmailError("");
     setEmailSuccess("");
     setUpdatingEmail(true);
-
     try {
       if (!emailValue || !emailValue.includes("@")) {
         throw new Error("Please enter a valid email address");
       }
+      if (emailValue.toLowerCase() === (auth.currentUser?.email || "").toLowerCase()) {
+        throw new Error("That's already your current email.");
+      }
+      await sendOTP(emailValue);
+      setEmailOtpSent(true);
+      setEmailSuccess(`Verification code sent to ${emailValue}.`);
+    } catch (error) {
+      console.error("Email-change OTP request failed:", error);
+      setEmailError(error.message || "Failed to send verification code.");
+    } finally {
+      setUpdatingEmail(false);
+    }
+  };
+
+  const handleEmailConfirmOTP = async (e) => {
+    e.preventDefault();
+    setEmailError("");
+    setEmailSuccess("");
+    setUpdatingEmail(true);
+    const previousEmail = auth.currentUser?.email || null;
+    try {
+      if (!emailOtpCode || emailOtpCode.length < 4) {
+        throw new Error("Enter the 6-digit verification code.");
+      }
+      const ok = await verifyOTP(emailValue, emailOtpCode);
+      if (!ok) throw new Error("Invalid or expired verification code.");
 
       await updateUserEmail(emailValue);
-      setEmailSuccess("Email updated successfully");
+
+      if (previousEmail) {
+        apiJson(
+          "/api/send-notification-email",
+          {
+            to: previousEmail,
+            subject: "Email address changed",
+            message: `The email on your EARIST SAS Portal account was changed to ${emailValue}. If you didn't make this change, contact the SAS office immediately.`,
+          },
+          { auth: true }
+        ).catch((err) => console.warn("Old-email notice failed:", err?.message || err));
+      }
+
+      setEmailSuccess("Email updated successfully.");
       setIsEditingEmail(false);
+      setEmailOtpSent(false);
+      setEmailOtpCode("");
 
       const user = auth.currentUser;
       if (user) {
@@ -128,12 +193,39 @@ const AdminProfilePage = () => {
         setUserData(userDoc);
       }
     } catch (error) {
-      console.error("Error updating email:", error);
-      setEmailError(error.message || "Failed to update email. Please try again.");
+      console.error("Error confirming email change:", error);
+      setEmailError(error.message || "Failed to update email.");
     } finally {
       setUpdatingEmail(false);
     }
   };
+
+  const togglePref = async (categoryId, channel) => {
+    const next = {
+      ...prefs,
+      [categoryId]: {
+        ...prefs[categoryId],
+        [channel]: !prefs[categoryId]?.[channel],
+      },
+    };
+    setPrefs(next);
+    setPrefsSaving(true);
+    setPrefsMessage("");
+    try {
+      await updateNotificationPreferences(next);
+      setPrefsMessage("Preferences saved.");
+    } catch (err) {
+      console.error("Failed to save notification preferences:", err);
+      setPrefsMessage("Save failed — try again.");
+      setPrefs(prefs);
+    } finally {
+      setPrefsSaving(false);
+      setTimeout(() => setPrefsMessage(""), 2500);
+    }
+  };
+
+  // Admins see all categories — including admin-only alerts.
+  const visibleCategories = Object.entries(NOTIFICATION_CATEGORIES);
 
   const handleLogout = async () => {
     try {
@@ -226,7 +318,10 @@ const AdminProfilePage = () => {
                       </button>
                     </div>
                   ) : (
-                    <form onSubmit={handleEmailUpdate} className="inline-edit-form">
+                    <form
+                      onSubmit={emailOtpSent ? handleEmailConfirmOTP : handleEmailRequestOTP}
+                      className="inline-edit-form"
+                    >
                       {emailError && <div className="form-error-small">{emailError}</div>}
                       {emailSuccess && <div className="form-success-small">{emailSuccess}</div>}
                       <div className="inline-edit-input-group">
@@ -235,18 +330,27 @@ const AdminProfilePage = () => {
                           className="form-input inline-edit-input"
                           value={emailValue}
                           onChange={(e) => setEmailValue(e.target.value)}
+                          disabled={emailOtpSent || updatingEmail}
                           required
                         />
+                        {emailOtpSent && (
+                          <input
+                            type="text"
+                            className="form-input inline-edit-input"
+                            value={emailOtpCode}
+                            onChange={(e) => setEmailOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                            placeholder="6-digit code"
+                            autoComplete="one-time-code"
+                            inputMode="numeric"
+                            maxLength={6}
+                            required
+                          />
+                        )}
                         <div className="inline-edit-actions">
                           <button
                             type="button"
                             className="btn-link"
-                            onClick={() => {
-                              setIsEditingEmail(false);
-                              setEmailValue(auth.currentUser?.email || "");
-                              setEmailError("");
-                              setEmailSuccess("");
-                            }}
+                            onClick={cancelEmailEdit}
                             disabled={updatingEmail}
                           >
                             Cancel
@@ -256,7 +360,9 @@ const AdminProfilePage = () => {
                             className="btn-primary-small"
                             disabled={updatingEmail}
                           >
-                            {updatingEmail ? "Saving..." : "Save"}
+                            {updatingEmail
+                              ? (emailOtpSent ? "Verifying..." : "Sending...")
+                              : (emailOtpSent ? "Confirm change" : "Send code")}
                           </button>
                         </div>
                       </div>
@@ -429,6 +535,54 @@ const AdminProfilePage = () => {
               <div className="profile-history-label">Last Login</div>
               <div className="profile-history-value">{formatDateTime(userData?.lastLogin) || "—"}</div>
             </div>
+          </div>
+        </section>
+
+        {/* Notifications */}
+        <section className="profile-card profile-card--strip">
+          <header className="profile-card-header">
+            <Icon name="bell" size={20} />
+            <h2 className="profile-card-title">Notification preferences</h2>
+          </header>
+          <div className="profile-card-body">
+            <table className="notif-prefs-table">
+              <thead>
+                <tr>
+                  <th>Category</th>
+                  <th className="notif-prefs-th">In-app</th>
+                  <th className="notif-prefs-th">Email</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleCategories.map(([catId, cat]) => (
+                  <tr key={catId}>
+                    <td>
+                      <div className="notif-prefs-label">{cat.label}</div>
+                      <div className="notif-prefs-desc">{cat.description}</div>
+                    </td>
+                    <td className="notif-prefs-cell">
+                      <input
+                        type="checkbox"
+                        checked={prefs[catId]?.inApp !== false}
+                        onChange={() => togglePref(catId, "inApp")}
+                        disabled={prefsSaving}
+                        aria-label={`In-app: ${cat.label}`}
+                      />
+                    </td>
+                    <td className="notif-prefs-cell">
+                      <input
+                        type="checkbox"
+                        checked={prefs[catId]?.email !== false}
+                        onChange={() => togglePref(catId, "email")}
+                        disabled={prefsSaving}
+                        aria-label={`Email: ${cat.label}`}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {prefsMessage && <div className="notif-prefs-status">{prefsMessage}</div>}
           </div>
         </section>
 

@@ -47,20 +47,13 @@ const AdminNavbar = ({ userData = null }) => {
         <div className="admin-navbar-logo-container">
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <img src={sasLogo} alt="SAS Logo" className="admin-navbar-logo-img" />
-            <div className="admin-navbar-logo">SAS</div>
+            <div className="admin-navbar-logo">ADMINISTRATOR</div>
           </div>
           <div className="admin-navbar-app-name">Student Affairs and Services</div>
         </div>
       </div>
       
       <div className="admin-navbar-center">
-        <div className="admin-badge">
-          <span className="admin-icon">👑</span>
-          <span className="admin-label">Administrator</span>
-          {userRole && userRole !== "Administrator" && (
-            <span className="admin-sub-role">({userRole})</span>
-          )}
-        </div>
       </div>
 
       <div className="admin-navbar-right">
