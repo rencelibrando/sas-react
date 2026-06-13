@@ -981,7 +981,7 @@ export const EQUIPMENT_REQUEST_PIPELINE_STAGES = PIPELINE_STAGES;
 
 export const STATUS_LABELS = {
   [STATUS.PENDING]: "Pending Review",
-  [STATUS.APPROVED]: "Approved — Awaiting Pickup",
+  [STATUS.APPROVED]: "Approved — For Delivery",
   [STATUS.RELEASED]: "Released — In Use",
   [STATUS.RETURNED]: "Returned — Closed",
   [STATUS.RETURNED_FOR_REVISION]: "Returned for Revision",

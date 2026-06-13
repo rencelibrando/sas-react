@@ -53,9 +53,6 @@ const AdminNavbar = ({ userData = null }) => {
         </div>
       </div>
       
-      <div className="admin-navbar-center">
-      </div>
-
       <div className="admin-navbar-right">
         <NotificationBell userId={auth.currentUser?.uid} isAdmin />
         <div className="admin-user-menu" ref={menuRef}>

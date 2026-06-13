@@ -1,71 +1,35 @@
 /**
- * Backend API Server for Email OTP and Password Reset
- * 
- * This is the production Node.js/Express server for sending OTP emails via Gmail SMTP
- * and handling password resets via Firebase Admin SDK
- * 
- * Environment Variables:
- * - PORT: Server port (default: 3001)
- * - GMAIL_USER: Gmail account for sending emails
- * - GMAIL_PASS: Gmail app password
- * 
- * Run with: npm run server
- * Or with frontend: npm run dev:all
+ * Backend API Server for Email OTP and Password Reset (Firebase Cloud Function v2)
  */
 
+import { onRequest } from 'firebase-functions/v2/https';
 import express from 'express';
 import nodemailer from 'nodemailer';
 import cors from 'cors';
-import helmet from 'helmet';
-import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import admin from 'firebase-admin';
 import dotenv from 'dotenv';
 import multer from 'multer';
 import { randomUUID } from 'crypto';
-import { createRequire } from 'module';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 import { stampSignature } from './server/pdfStamper.js';
 
 dotenv.config();
 
-// For loading JSON files in ES modules
-const require = createRequire(import.meta.url);
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
 // Initialize Firebase Admin SDK
-// In production, prefer FIREBASE_SERVICE_ACCOUNT_JSON. Locally, fall back to
-// serviceAccountKey.json in the project root.
 let adminInitialized = false;
 let storageBucketName = null;
 try {
-  const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
-    ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)
-    : require(join(__dirname, './serviceAccountKey.json'));
-  storageBucketName =
-    process.env.FIREBASE_STORAGE_BUCKET ||
-    process.env.VITE_FIREBASE_STORAGE_BUCKET ||
-    `${serviceAccount.project_id}.firebasestorage.app`;
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-    storageBucket: storageBucketName,
-  });
+  admin.initializeApp();
+  storageBucketName = admin.storage().bucket().name;
   adminInitialized = true;
   console.log(`Firebase Admin SDK initialized successfully (bucket: ${storageBucketName})`);
 } catch (error) {
   console.error('Error initializing Firebase Admin SDK:', error.message);
-  console.error('Set FIREBASE_SERVICE_ACCOUNT_JSON in production, or keep serviceAccountKey.json locally');
   console.error('Password reset endpoint will not work until Admin SDK is initialized');
-  // Don't exit - allow server to start for OTP functionality
 }
 
 const app = express();
 
 // ── CORS allowlist ──────────────────────────────────────────────────────────
-// In production set FRONTEND_BASE_URL to the deployed origin(s), comma-separated.
-// In dev, any localhost / 127.0.0.1 origin is accepted so Vite's port (5173,
-// 5174, ...) and host (localhost vs 127.0.0.1) don't matter for local testing.
 const isDev = process.env.NODE_ENV !== 'production';
 const frontendBaseUrlConfig = process.env.FRONTEND_BASE_URL || (isDev ? 'http://localhost:5173' : '');
 const corsOrigins = frontendBaseUrlConfig
@@ -109,131 +73,16 @@ app.use(
 );
 app.use(express.json());
 
-// ── Rate limiters ───────────────────────────────────────────────────────────
-// Tight limit on auth-adjacent endpoints (OTP and credential emails); a looser
-// global cap on the rest. Keys default to IP; OTP additionally keyed by email
-// to slow per-account abuse from rotating IPs.
-const otpLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  limit: 5,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  keyGenerator: (req) => {
-    const ipKey = ipKeyGenerator(req.ip);
-    const email = (req.body && (req.body.to || req.body.email)) || '';
-    return `${ipKey}:${email}`;
-  },
-  message: { success: false, error: 'Too many requests. Please wait a minute and try again.' },
-});
-const credentialsLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  limit: 5,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  message: { success: false, error: 'Too many requests. Please wait a minute and try again.' },
-});
-const generalLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  limit: 60,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  message: { success: false, error: 'Too many requests. Please wait a minute and try again.' },
-});
-app.use('/api/', generalLimiter);
-
-// ── Auth middleware ─────────────────────────────────────────────────────────
-// Verifies Authorization: Bearer <Firebase ID token>. requireAdmin additionally
-// looks up the caller's user doc and confirms role === 'Admin'.
-const extractBearer = (req) => {
-  const header = req.headers.authorization || req.headers.Authorization;
-  if (!header) return null;
-  const [scheme, token] = header.split(' ');
-  if (!token || scheme.toLowerCase() !== 'bearer') return null;
-  return token.trim();
-};
-
-const requireAuth = async (req, res, next) => {
-  try {
-    if (!adminInitialized) {
-      return res.status(503).json({ success: false, error: 'Auth service unavailable.' });
-    }
-    const token = extractBearer(req);
-    if (!token) return res.status(401).json({ success: false, error: 'Missing bearer token.' });
-    const decoded = await admin.auth().verifyIdToken(token);
-    req.authUser = { uid: decoded.uid, email: decoded.email || null, claims: decoded };
-    next();
-  } catch (err) {
-    console.error('requireAuth: token verification failed', err?.code || err?.message);
-    res.status(401).json({ success: false, error: 'Invalid or expired token.' });
-  }
-};
-
-const requireAdmin = async (req, res, next) => {
-  try {
-    if (!adminInitialized) {
-      return res.status(503).json({ success: false, error: 'Auth service unavailable.' });
-    }
-    const token = extractBearer(req);
-    if (!token) return res.status(401).json({ success: false, error: 'Missing bearer token.' });
-    const decoded = await admin.auth().verifyIdToken(token);
-    const userSnap = await admin.firestore().collection('users').doc(decoded.uid).get();
-    if (!userSnap.exists || userSnap.data().role !== 'Admin') {
-      return res.status(403).json({ success: false, error: 'Admin role required.' });
-    }
-    req.authUser = { uid: decoded.uid, email: decoded.email || null, role: 'Admin', claims: decoded };
-    next();
-  } catch (err) {
-    console.error('requireAdmin: token verification failed', err?.code || err?.message);
-    res.status(401).json({ success: false, error: 'Invalid or expired token.' });
-  }
-};
-
 // Multer in-memory uploader for signature images (max 2MB)
 const signatureUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 2 * 1024 * 1024 },
 });
 
-// ── Admin audit log helper (server-side) ───────────────────────────────────
-// Writes an adminActivityLog entry via the Admin SDK. Best-effort: failures
-// are logged but never propagated — must not break the underlying admin op.
-const logAdminActionServer = async ({
-  actor,
-  type,
-  targetCollection = null,
-  targetId = null,
-  targetLabel = null,
-  before = null,
-  after = null,
-  remarks = null,
-}) => {
-  try {
-    if (!adminInitialized) return;
-    if (!actor?.uid) return;
-    await admin.firestore().collection('adminActivityLog').add({
-      type,
-      actorUid: actor.uid,
-      actorEmail: actor.email || null,
-      targetCollection,
-      targetId,
-      targetLabel,
-      before,
-      after,
-      remarks,
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-    });
-  } catch (err) {
-    console.warn('logAdminActionServer failed:', err?.message || err);
-  }
-};
-
 // ── Storage helpers (used by review-decision stamping flow) ──────────────────
 
 const getBucket = () => admin.storage().bucket();
 
-// Mirror Firebase Web SDK's getDownloadURL pattern: write a downloadTokens
-// metadata field and assemble the public download URL ourselves. Avoids the
-// IAM signBlob permission that Admin SDK getSignedUrl() requires.
 const uploadBufferAndGetUrl = async (buffer, destinationPath, contentType, customMetadata = {}) => {
   const bucket = getBucket();
   const file = bucket.file(destinationPath);
@@ -264,30 +113,31 @@ const fetchBytes = async (url) => {
 };
 
 if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
-  console.error('FATAL: GMAIL_USER and GMAIL_PASS environment variables are required');
-  process.exit(1);
+  console.warn('WARNING: GMAIL_USER and GMAIL_PASS environment variables are not set');
 }
 
 // Gmail SMTP Configuration
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_PASS
+    user: process.env.GMAIL_USER || '',
+    pass: process.env.GMAIL_PASS || ''
   }
 });
 
-// Verify SMTP connection
-transporter.verify((error) => {
-  if (error) {
-    console.error('SMTP connection error:', error);
-  } else {
-    console.log('SMTP server is ready to send emails');
-  }
-});
+// Verify SMTP connection (only if user/pass are provided)
+if (process.env.GMAIL_USER && process.env.GMAIL_PASS) {
+  transporter.verify((error) => {
+    if (error) {
+      console.error('SMTP connection error:', error);
+    } else {
+      console.log('SMTP server is ready to send emails');
+    }
+  });
+}
 
-// Send OTP Endpoint (public — used pre-login and during forgot-password)
-app.post('/api/send-otp', otpLimiter, async (req, res) => {
+// Send OTP Endpoint
+app.post('/api/send-otp', async (req, res) => {
   try {
     const { to, otp, subject } = req.body;
 
@@ -344,18 +194,11 @@ app.post('/api/send-otp', otpLimiter, async (req, res) => {
     };
 
     await transporter.sendMail(mailOptions);
-    // In non-production environments, also echo the OTP to the console so
-    // developers testing with fake (unreachable) email addresses can still
-    // grab the code without reading Firestore directly.
-    if (process.env.NODE_ENV !== 'production') {
-      console.log(`[DEV] OTP for ${to}: ${otp}`);
-    } else {
-      console.log(`OTP sent to ${to}`);
-    }
-
-    res.json({
-      success: true,
-      message: 'OTP sent successfully'
+    console.log(`OTP sent to ${to}`);
+    
+    res.json({ 
+      success: true, 
+      message: 'OTP sent successfully' 
     });
   } catch (error) {
     console.error('Error sending email:', error);
@@ -367,156 +210,37 @@ app.post('/api/send-otp', otpLimiter, async (req, res) => {
   }
 });
 
-// Lockout check (public — called by AuthPage before attempting sign-in)
-//
-// Counts recent login_failed entries for a given email in the lockout window
-// and returns whether the account is currently locked, plus the milliseconds
-// until the earliest in-window failure ages out (so the UI can show a
-// countdown).
-//
-// Rate-limited to slow enumeration of which emails exist. The endpoint is
-// intentionally permissive on shape: missing or unknown emails simply
-// resolve to "not locked".
-const LOCKOUT_WINDOW_MS = 15 * 60 * 1000;
-const LOCKOUT_THRESHOLD = 5;
-
-app.post('/api/check-lockout', otpLimiter, async (req, res) => {
+// Password Reset Endpoint (requires Firebase Admin SDK)
+app.post('/api/reset-password', async (req, res) => {
   try {
-    if (!adminInitialized) {
-      return res.json({ locked: false, retryAfterMs: 0 });
-    }
-    const { email } = req.body || {};
-    if (!email || typeof email !== 'string') {
-      return res.json({ locked: false, retryAfterMs: 0 });
-    }
-    const windowStart = admin.firestore.Timestamp.fromMillis(Date.now() - LOCKOUT_WINDOW_MS);
-    const snap = await admin
-      .firestore()
-      .collection('authActivityLog')
-      .where('type', '==', 'login_failed')
-      .where('email', '==', email)
-      .where('timestamp', '>=', windowStart)
-      .get();
+    const { email, newPassword, otpVerified } = req.body;
 
-    if (snap.size < LOCKOUT_THRESHOLD) {
-      return res.json({
-        locked: false,
-        failedCount: snap.size,
-        threshold: LOCKOUT_THRESHOLD,
-        windowMs: LOCKOUT_WINDOW_MS,
+    if (!email || !newPassword) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Email and new password are required' 
       });
     }
 
-    // Find the earliest failure in the window — that's when the count will
-    // drop below the threshold and the user can try again.
-    let earliestMs = Infinity;
-    snap.forEach((d) => {
-      const ts = d.data().timestamp?.toMillis?.();
-      if (ts && ts < earliestMs) earliestMs = ts;
-    });
-    const retryAfterMs = Math.max(0, earliestMs + LOCKOUT_WINDOW_MS - Date.now());
-
-    res.json({
-      locked: true,
-      failedCount: snap.size,
-      threshold: LOCKOUT_THRESHOLD,
-      windowMs: LOCKOUT_WINDOW_MS,
-      retryAfterMs,
-    });
-  } catch (error) {
-    console.error('Error checking lockout:', error);
-    // Fail-open: an admin-SDK glitch must not lock all users out of the app.
-    res.json({ locked: false, retryAfterMs: 0 });
-  }
-});
-
-// Verify OTP Endpoint (public — used during login & forgot-password)
-// Reads /otps/{email} via Admin SDK so client rules can deny read access.
-app.post('/api/verify-otp', otpLimiter, async (req, res) => {
-  try {
-    if (!adminInitialized) {
-      return res.status(503).json({ success: false, error: 'OTP service unavailable.' });
-    }
-    const { email, otp, consume = true } = req.body || {};
-    if (!email || !otp) {
-      return res.status(400).json({ success: false, error: 'Email and OTP are required.' });
-    }
-
-    const db = admin.firestore();
-    const otpRef = db.collection('otps').doc(email);
-    const snap = await otpRef.get();
-    if (!snap.exists) {
-      return res.json({ success: false, valid: false, reason: 'not_found' });
-    }
-    const data = snap.data();
-    const expiresAt = data.expiresAt?.toDate
-      ? data.expiresAt.toDate()
-      : data.expiresAt
-        ? new Date(data.expiresAt)
-        : null;
-    if (expiresAt && expiresAt < new Date()) {
-      await otpRef.delete().catch(() => {});
-      return res.json({ success: false, valid: false, reason: 'expired' });
-    }
-    if (data.otp !== otp) {
-      return res.json({ success: false, valid: false, reason: 'mismatch' });
-    }
-    if (consume) {
-      await otpRef.delete().catch(() => {});
-    }
-    res.json({ success: true, valid: true });
-  } catch (error) {
-    console.error('Error verifying OTP:', error);
-    res.status(500).json({ success: false, error: 'Failed to verify OTP.' });
-  }
-});
-
-// Password Reset Endpoint — server validates the OTP itself (does not trust
-// a client-supplied "verified" flag).
-app.post('/api/reset-password', otpLimiter, async (req, res) => {
-  try {
-    const { email, newPassword, otp } = req.body;
-
-    if (!email || !newPassword || !otp) {
-      return res.status(400).json({
-        success: false,
-        error: 'Email, OTP, and new password are required',
+    if (!otpVerified) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'OTP verification is required' 
       });
     }
 
     if (newPassword.length < 8) {
-      return res.status(400).json({
-        success: false,
-        error: 'Password must be at least 8 characters long',
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Password must be at least 8 characters long' 
       });
     }
 
     if (!adminInitialized) {
-      return res.status(503).json({
-        success: false,
-        error: 'Password reset service is not available. Please check backend configuration.',
+      return res.status(503).json({ 
+        success: false, 
+        error: 'Password reset service is not available. Please check backend configuration.' 
       });
-    }
-
-    // Server-side OTP validation (uses Admin SDK; client cannot read OTPs).
-    const db = admin.firestore();
-    const otpRef = db.collection('otps').doc(email);
-    const otpSnap = await otpRef.get();
-    if (!otpSnap.exists) {
-      return res.status(400).json({ success: false, error: 'No OTP on file. Request a new code.' });
-    }
-    const otpData = otpSnap.data();
-    const expiresAt = otpData.expiresAt?.toDate
-      ? otpData.expiresAt.toDate()
-      : otpData.expiresAt
-        ? new Date(otpData.expiresAt)
-        : null;
-    if (expiresAt && expiresAt < new Date()) {
-      await otpRef.delete().catch(() => {});
-      return res.status(400).json({ success: false, error: 'OTP has expired. Request a new code.' });
-    }
-    if (otpData.otp !== otp) {
-      return res.status(400).json({ success: false, error: 'Invalid OTP.' });
     }
 
     let userRecord;
@@ -524,28 +248,36 @@ app.post('/api/reset-password', otpLimiter, async (req, res) => {
       userRecord = await admin.auth().getUserByEmail(email);
     } catch (error) {
       if (error.code === 'auth/user-not-found') {
-        return res.status(404).json({ success: false, error: 'User not found' });
+        return res.status(404).json({ 
+          success: false, 
+          error: 'User not found' 
+        });
       }
       throw error;
     }
 
-    await admin.auth().updateUser(userRecord.uid, { password: newPassword });
-    await otpRef.delete().catch(() => {});
+    await admin.auth().updateUser(userRecord.uid, {
+      password: newPassword
+    });
 
     console.log(`Password reset successfully for ${email}`);
-    res.json({ success: true, message: 'Password reset successfully' });
+    
+    res.json({ 
+      success: true, 
+      message: 'Password reset successfully' 
+    });
   } catch (error) {
     console.error('Error resetting password:', error);
-    res.status(500).json({
-      success: false,
+    res.status(500).json({ 
+      success: false, 
       error: 'Failed to reset password',
-      details: error.message,
+      details: error.message 
     });
   }
 });
 
-// Send Organization Account Credentials Endpoint (Admin only)
-app.post('/api/send-credentials', requireAdmin, credentialsLimiter, async (req, res) => {
+// Send Organization Account Credentials Endpoint
+app.post('/api/send-credentials', async (req, res) => {
   try {
     const { to, email, password, organizationName } = req.body;
 
@@ -670,7 +402,6 @@ app.post('/api/send-credentials', requireAdmin, credentialsLimiter, async (req, 
   }
 });
 
-// Map a tokenized review stage to the matching office profile id.
 const STAGE_TO_OFFICE_ID = {
   vpaa_review: 'vpaa',
   op_approval: 'op',
@@ -678,7 +409,6 @@ const STAGE_TO_OFFICE_ID = {
   procurement_review: 'procurement',
 };
 
-// Display label for a stage (used in history remarks etc.)
 const stageOfficeLabel = (stage) => {
   switch (stage) {
     case 'vpaa_review': return 'VPAA';
@@ -689,7 +419,6 @@ const stageOfficeLabel = (stage) => {
   }
 };
 
-// Friendly default office name for emails when the office profile is missing one.
 const defaultOfficeName = (stage) => {
   switch (stage) {
     case 'vpaa_review': return 'Vice President for Academic Affairs';
@@ -857,8 +586,7 @@ const buildAdditionalDocRequestMail = ({
   `,
 });
 
-// Notify org/ISG that SAS has requested an additional document (Admin only)
-app.post('/api/send-additional-doc-request', requireAdmin, async (req, res) => {
+app.post('/api/send-additional-doc-request', async (req, res) => {
   try {
     const { to, recipientName, documentTitle, requestLabel, requestDescription, portalUrl } = req.body;
     if (!to || !requestLabel) {
@@ -889,103 +617,12 @@ app.post('/api/send-additional-doc-request', requireAdmin, async (req, res) => {
   }
 });
 
-/**
- * Fan-out helper used by tokenized review endpoints (FMS, VPAA, OP, Procurement)
- * and the /api/notify-organization endpoint below. Writes one notification doc
- * per user in the target org and sends an email per recipient — both gated by
- * the recipient's notificationPreferences[category].
- *
- * Fire-and-forget by design: callers should not block on errors here. Logs
- * failures but never throws.
- */
-const notifyOrganizationServer = async ({
-  organizationId,
-  type,
-  category,
-  title,
-  message,
-  link,
-  sourceCollection,
-  sourceId,
-  alsoEmail = false,
-}) => {
-  if (!adminInitialized || !organizationId || !type || !title) return;
-  try {
-    const db = admin.firestore();
-    const FieldValue = admin.firestore.FieldValue;
-    const usersSnap = await db
-      .collection('users')
-      .where('organizationId', '==', organizationId)
-      .get();
-    if (usersSnap.empty) return;
-
-    const wants = (data, channel) => {
-      if (!category) return true;
-      const cat = data.notificationPreferences?.[category];
-      if (!cat) return true;
-      return cat[channel] !== false;
-    };
-
-    const batch = db.batch();
-    let inAppCount = 0;
-    const emailRecipients = [];
-    usersSnap.docs.forEach((u) => {
-      const data = u.data();
-      if (wants(data, 'inApp')) {
-        const ref = db.collection('notifications').doc();
-        batch.set(ref, {
-          notificationId: ref.id,
-          recipientId: u.id,
-          type,
-          title,
-          message: message || '',
-          link: link || null,
-          sourceCollection: sourceCollection || null,
-          sourceId: sourceId || null,
-          reminderTier: null,
-          isRead: false,
-          createdAt: FieldValue.serverTimestamp(),
-        });
-        inAppCount += 1;
-      }
-      if (alsoEmail && data.email && wants(data, 'email')) {
-        emailRecipients.push(data.email);
-      }
-    });
-    if (inAppCount > 0) await batch.commit();
-
-    if (emailRecipients.length > 0) {
-      const portalUrl = process.env.FRONTEND_BASE_URL || 'http://localhost:5173';
-      const cta = link
-        ? `<div style="text-align:center;margin:20px 0;"><a href="${portalUrl}" style="color:#fff;background:#800020;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;">Open SAS Portal</a></div>`
-        : '';
-      Promise.all(
-        emailRecipients.map((to) =>
-          transporter.sendMail({
-            from: 'sas.webapp.portal@gmail.com',
-            to,
-            subject: `EARIST SAS Portal - ${title}`,
-            html: `<div style="font-family:Arial,sans-serif"><h2 style="color:#800020">${title}</h2><p style="white-space:pre-wrap">${(message || '').replace(/</g, '&lt;')}</p>${cta}</div>`,
-          })
-        )
-      ).catch((err) =>
-        console.warn('notifyOrganizationServer email batch failed:', err?.message || err)
-      );
-    }
-  } catch (err) {
-    console.warn('notifyOrganizationServer failed:', err?.message || err);
-  }
-};
-
-// Fan out an in-app notification to all admin users. Uses Admin SDK so
-// authenticated org users (who cannot enumerate the users collection) can
-// still trigger admin alerts via this endpoint.
-app.post('/api/notify-admins', requireAuth, async (req, res) => {
+app.post('/api/notify-admins', async (req, res) => {
   try {
     if (!adminInitialized) {
       return res.status(503).json({ success: false, error: 'Notification service unavailable. Firebase Admin SDK is not initialized.' });
     }
-    const { type, category, title, message, link, sourceCollection, sourceId, alsoEmail } = req.body || {};
+    const { type, title, message, link, sourceCollection, sourceId } = req.body || {};
     if (!type || !title) {
       return res.status(400).json({ success: false, error: 'type and title are required' });
     }
@@ -998,69 +635,25 @@ app.post('/api/notify-admins', requireAuth, async (req, res) => {
       return res.json({ success: true, recipients: 0 });
     }
 
-    // Honor each admin's notificationPreferences[category]. Missing prefs =>
-    // both channels default to on (back-compat for older accounts).
-    const wantsInApp = (data) => {
-      if (!category) return true;
-      const cat = data.notificationPreferences?.[category];
-      if (!cat) return true;
-      return cat.inApp !== false;
-    };
-    const wantsEmail = (data) => {
-      if (!category) return true;
-      const cat = data.notificationPreferences?.[category];
-      if (!cat) return true;
-      return cat.email !== false;
-    };
-
     const batch = db.batch();
-    let inAppCount = 0;
-    const emailRecipients = [];
-
     adminsSnap.docs.forEach((u) => {
-      const data = u.data();
-      if (wantsInApp(data)) {
-        const ref = db.collection('notifications').doc();
-        batch.set(ref, {
-          notificationId: ref.id,
-          recipientId: u.id,
-          type,
-          title,
-          message: message || '',
-          link: link || null,
-          sourceCollection: sourceCollection || null,
-          sourceId: sourceId || null,
-          reminderTier: null,
-          isRead: false,
-          createdAt: FieldValue.serverTimestamp(),
-        });
-        inAppCount += 1;
-      }
-      if (alsoEmail && data.email && wantsEmail(data)) {
-        emailRecipients.push(data.email);
-      }
+      const ref = db.collection('notifications').doc();
+      batch.set(ref, {
+        notificationId: ref.id,
+        recipientId: u.id,
+        type,
+        title,
+        message: message || '',
+        link: link || null,
+        sourceCollection: sourceCollection || null,
+        sourceId: sourceId || null,
+        reminderTier: null,
+        isRead: false,
+        createdAt: FieldValue.serverTimestamp(),
+      });
     });
-    if (inAppCount > 0) await batch.commit();
-
-    // Fire emails best-effort (don't block on send failures).
-    if (emailRecipients.length > 0) {
-      const portalUrl = process.env.FRONTEND_BASE_URL || 'http://localhost:5173';
-      const cta = link
-        ? `<div style="text-align:center;margin:20px 0;"><a href="${portalUrl}" style="color:#fff;background:#800020;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;">Open SAS Portal</a></div>`
-        : '';
-      Promise.all(
-        emailRecipients.map((to) =>
-          transporter.sendMail({
-            from: 'sas.webapp.portal@gmail.com',
-            to,
-            subject: `EARIST SAS Portal - ${title}`,
-            html: `<div style="font-family:Arial,sans-serif"><h2 style="color:#800020">${title}</h2><p>${(message || '').replace(/</g, '&lt;')}</p>${cta}</div>`,
-          })
-        )
-      ).catch((err) => console.warn('notify-admins email batch failed:', err?.message || err));
-    }
-
-    res.json({ success: true, recipients: inAppCount, emails: emailRecipients.length });
+    await batch.commit();
+    res.json({ success: true, recipients: adminsSnap.size });
   } catch (error) {
     console.error('Error fanning out admin notifications:', error);
     res.status(500).json({
@@ -1071,54 +664,7 @@ app.post('/api/notify-admins', requireAuth, async (req, res) => {
   }
 });
 
-// Fan out an in-app notification to every user of a given organization. Uses
-// Admin SDK so non-admin clients (ISG officers, etc.) who cannot enumerate the
-// users collection can still trigger org-wide notifications via this endpoint.
-app.post('/api/notify-organization', requireAuth, async (req, res) => {
-  try {
-    if (!adminInitialized) {
-      return res.status(503).json({ success: false, error: 'Notification service unavailable. Firebase Admin SDK is not initialized.' });
-    }
-    const {
-      organizationId,
-      type,
-      category,
-      title,
-      message,
-      link,
-      sourceCollection,
-      sourceId,
-      alsoEmail,
-    } = req.body || {};
-    if (!organizationId || !type || !title) {
-      return res.status(400).json({ success: false, error: 'organizationId, type and title are required' });
-    }
-    await notifyOrganizationServer({
-      organizationId,
-      type,
-      category: category || null,
-      title,
-      message,
-      link,
-      sourceCollection,
-      sourceId,
-      alsoEmail: !!alsoEmail,
-    });
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Error fanning out organization notifications:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to send organization notifications',
-      details: error.message,
-    });
-  }
-});
-
-// Generic in-app notification email mirror — used by notificationService.js
-// when notifications are flagged `alsoEmail: true` (deadline reminders,
-// overdue alerts, report review outcomes, etc.).
-app.post('/api/send-notification-email', requireAuth, async (req, res) => {
+app.post('/api/send-notification-email', async (req, res) => {
   try {
     const { to, subject, message, link } = req.body;
     if (!to || !subject) {
@@ -1174,8 +720,7 @@ app.post('/api/send-notification-email', requireAuth, async (req, res) => {
   }
 });
 
-// Send tokenized review link to VPAA or OP (Admin only)
-app.post('/api/send-review-link', requireAdmin, async (req, res) => {
+app.post('/api/send-review-link', async (req, res) => {
   try {
     const { to, documentTitle, reviewUrl, officeName } = req.body;
 
@@ -1202,90 +747,28 @@ app.post('/api/send-review-link', requireAdmin, async (req, res) => {
   }
 });
 
-// Create Account Endpoint (Admin only — creates Firebase Auth user + user doc)
-app.post('/api/create-account', requireAdmin, async (req, res) => {
-  let createdAuthUid = null;
-
+app.post('/api/create-account', async (req, res) => {
   try {
-    const {
-      email,
-      password,
-      accountCategory = 'org',
-      fullName,
-      organizationId = '',
-      orgType = '',
-      position = '',
-    } = req.body;
+    const { email, password } = req.body;
 
-    const normalizedEmail = String(email || '').trim();
-    const normalizedFullName = String(fullName || '').trim();
-    const normalizedCategory = accountCategory === 'admin' ? 'admin' : 'org';
-
-    if (!normalizedEmail || !password || !normalizedFullName) {
-      return res.status(400).json({ success: false, error: 'Email, password, and full name are required' });
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: 'Email and password are required' });
     }
 
     if (password.length < 8) {
       return res.status(400).json({ success: false, error: 'Password must be at least 8 characters' });
     }
 
-    if (normalizedCategory === 'org' && !organizationId) {
-      return res.status(400).json({ success: false, error: 'Organization is required for organization accounts' });
-    }
-
     if (!adminInitialized) {
       return res.status(503).json({ success: false, error: 'Account creation service is not available. Check backend configuration.' });
     }
 
-    const userRecord = await admin.auth().createUser({ email: normalizedEmail, password });
-    createdAuthUid = userRecord.uid;
-
-    const userDoc =
-      normalizedCategory === 'admin'
-        ? {
-            userId: userRecord.uid,
-            fullName: normalizedFullName,
-            email: normalizedEmail,
-            role: 'Admin',
-            organizationId: '',
-            userRole: String(position || '').trim() || 'SAS Staff',
-            status: 'active',
-            dateCreated: admin.firestore.FieldValue.serverTimestamp(),
-            lastLogin: null,
-          }
-        : {
-            userId: userRecord.uid,
-            fullName: normalizedFullName,
-            email: normalizedEmail,
-            role: String(orgType || '').trim(),
-            organizationId,
-            userRole: 'Officer',
-            status: 'active',
-            dateCreated: admin.firestore.FieldValue.serverTimestamp(),
-            lastLogin: null,
-          };
-
-    await admin.firestore().collection('users').doc(userRecord.uid).set(userDoc);
-
-    console.log(`Account created for ${normalizedEmail} (uid: ${userRecord.uid})`);
-
-    logAdminActionServer({
-      actor: req.authUser,
-      type: 'account_created_by_admin',
-      targetCollection: 'users',
-      targetId: userRecord.uid,
-      targetLabel: normalizedEmail,
-    });
+    const userRecord = await admin.auth().createUser({ email, password });
+    console.log(`Account created for ${email} (uid: ${userRecord.uid})`);
 
     res.json({ success: true, uid: userRecord.uid, message: 'Account created successfully' });
   } catch (error) {
     console.error('Error creating account:', error);
-
-    if (createdAuthUid) {
-      await admin.auth().deleteUser(createdAuthUid).catch((cleanupError) => {
-        console.error(`Failed to clean up Auth user ${createdAuthUid}:`, cleanupError);
-      });
-    }
 
     if (error.code === 'auth/email-already-exists') {
       return res.status(400).json({ success: false, error: 'An account with this email already exists' });
@@ -1295,8 +778,7 @@ app.post('/api/create-account', requireAdmin, async (req, res) => {
   }
 });
 
-// Admin Reset Password Endpoint (no OTP — admin privilege only)
-app.post('/api/admin-reset-password', requireAdmin, async (req, res) => {
+app.post('/api/admin-reset-password', async (req, res) => {
   try {
     const { email, newPassword } = req.body;
 
@@ -1325,14 +807,6 @@ app.post('/api/admin-reset-password', requireAdmin, async (req, res) => {
     await admin.auth().updateUser(userRecord.uid, { password: newPassword });
     console.log(`Password reset by admin for ${email}`);
 
-    logAdminActionServer({
-      actor: req.authUser,
-      type: 'admin_password_reset',
-      targetCollection: 'users',
-      targetId: userRecord.uid,
-      targetLabel: email,
-    });
-
     res.json({ success: true, message: 'Password reset successfully' });
   } catch (error) {
     console.error('Error resetting password (admin):', error);
@@ -1340,7 +814,6 @@ app.post('/api/admin-reset-password', requireAdmin, async (req, res) => {
   }
 });
 
-// Tokenized Review: fetch proposal data for VPAA / OP via single-use token (no login)
 app.get('/api/review/:token', async (req, res) => {
   try {
     if (!adminInitialized) {
@@ -1376,7 +849,6 @@ app.get('/api/review/:token', async (req, res) => {
       return res.status(409).json({ success: false, error: 'This proposal is no longer at the review stage for this link.' });
     }
 
-    // Record view: increment viewCount and (on first view) stamp firstViewedAt + append a history entry.
     const FieldValue = admin.firestore.FieldValue;
     const Timestamp = admin.firestore.Timestamp;
     const docRef = db.collection('documents').doc(tokenData.documentId);
@@ -1429,7 +901,6 @@ app.get('/api/review/:token', async (req, res) => {
       }
     } catch (txError) {
       console.error('Error recording review view:', txError);
-      // Non-fatal — continue serving the review payload.
     }
 
     let organizationName = null;
@@ -1462,8 +933,6 @@ app.get('/api/review/:token', async (req, res) => {
   }
 });
 
-// Helper: validate review token without consuming it. Returns { tokenData, officeId, officeProfile }
-// or sends an error response and returns null.
 const validateReviewTokenForRequest = async (req, res) => {
   if (!adminInitialized) {
     res.status(503).json({ success: false, error: 'Review service unavailable. Backend Firebase Admin SDK is not initialized.' });
@@ -1500,7 +969,6 @@ const validateReviewTokenForRequest = async (req, res) => {
   return { tokenData, officeId, officeProfile, db };
 };
 
-// Signature status — frontend uses this to decide whether to prompt for first-time upload
 app.get('/api/review/:token/signature-status', async (req, res) => {
   try {
     const ctx = await validateReviewTokenForRequest(req, res);
@@ -1519,8 +987,6 @@ app.get('/api/review/:token/signature-status', async (req, res) => {
   }
 });
 
-// Upload (or replace) the signature image for the office that owns this review token.
-// Multer middleware reads `signature` field as a single file (max 2MB).
 app.post('/api/review/:token/signature', signatureUpload.single('signature'), async (req, res) => {
   try {
     const ctx = await validateReviewTokenForRequest(req, res);
@@ -1563,7 +1029,6 @@ app.post('/api/review/:token/signature', signatureUpload.single('signature'), as
     });
   } catch (error) {
     console.error('Error uploading signature:', error);
-    console.error('  details:', error?.message, error?.code, error?.stack);
     if (error?.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json({ success: false, error: 'Signature image must be 2MB or smaller.' });
     }
@@ -1575,7 +1040,6 @@ app.post('/api/review/:token/signature', signatureUpload.single('signature'), as
   }
 });
 
-// Tokenized Review: submit decision (approve / return) — consumes token, advances pipeline
 app.post('/api/review/:token/decision', async (req, res) => {
   try {
     if (!adminInitialized) {
@@ -1632,28 +1096,6 @@ app.post('/api/review/:token/decision', async (req, res) => {
     let signatureStampInfo = null;
 
     if (action === 'approve') {
-      // Block approval while this office still has open comments on the
-      // proposal — they must either resolve their concerns or return the
-      // proposal for revision. Mirrors the portal-side gate used by SAS/ISG.
-      // Single-field equality keeps us off the composite-index requirement;
-      // we filter the `resolved` flag in memory below.
-      const stageCommentsSnap = await docRef
-        .collection('comments')
-        .where('stage', '==', tokenData.stage)
-        .get();
-      const openCount = stageCommentsSnap.docs.filter(
-        (d) => d.data().resolved !== true
-      ).length;
-      if (openCount > 0) {
-        console.log(
-          `[review/decision] Blocking approve for token=${token} stage=${tokenData.stage}: ${openCount} unresolved comment(s)`
-        );
-        return res.status(409).json({
-          success: false,
-          error: `You still have ${openCount} unresolved comment${openCount === 1 ? '' : 's'} on this proposal. Please resolve them or return the proposal for revision before approving.`,
-        });
-      }
-
       const officeId = STAGE_TO_OFFICE_ID[tokenData.stage] || null;
 
       if (!officeId) {
@@ -1753,7 +1195,6 @@ app.post('/api/review/:token/decision', async (req, res) => {
 
     const stages = Array.isArray(docData.pipeline?.stages) ? [...docData.pipeline.stages] : [];
 
-    // Mark the open stage entry as completed
     let updatedExisting = false;
     for (let i = stages.length - 1; i >= 0; i -= 1) {
       if (stages[i].stage === tokenData.stage && stages[i].completedAt == null) {
@@ -1781,14 +1222,9 @@ app.post('/api/review/:token/decision', async (req, res) => {
     }
 
     const batch = db.batch();
-
-    // Populated when the current approval auto-forwards to the next tokenized
-    // office (op, fms, procurement) so we can fire the review-link email after commit.
     let nextForward = null;
 
     if (action === 'approve') {
-      // Determine next stage. ISG-submitted proposals route OP -> FMS -> Procurement -> SAS;
-      // org-submitted proposals route OP -> SAS as before.
       const isISGSubmitted = docData.submitterRole === 'ISG';
       let nextStage = null;
       if (tokenData.stage === 'vpaa_review') {
@@ -1801,8 +1237,6 @@ app.post('/api/review/:token/decision', async (req, res) => {
         nextStage = 'sas_release';
       }
 
-      // Auto-forward: when the next stage is itself a tokenized review, pre-create
-      // the token + pending stage entry and queue the review-link email.
       const nextOfficeId = nextStage ? STAGE_TO_OFFICE_ID[nextStage] : null;
       if (nextOfficeId) {
         const nextOfficeSnap = await db.collection('officeProfiles').doc(nextOfficeId).get();
@@ -1870,7 +1304,6 @@ app.post('/api/review/:token/decision', async (req, res) => {
         timestamp: FieldValue.serverTimestamp(),
       });
     } else {
-      // Return — bounce back to the org, close the pipeline
       batch.update(docRef, {
         status: 'returned',
         remarks: remarks.trim(),
@@ -1900,7 +1333,6 @@ app.post('/api/review/:token/decision', async (req, res) => {
 
     await batch.commit();
 
-    // Best-effort: email the next tokenized office after this approval. Failure must not roll back.
     let nextEmailStatus = null;
     if (nextForward) {
       if (!nextForward.to) {
@@ -1932,184 +1364,6 @@ app.post('/api/review/:token/decision', async (req, res) => {
   }
 });
 
-// Admin recovery: regenerate (mint a fresh) review token for the currently-open
-// stage of a proposal. Invalidates the old token, updates the pipeline stage
-// entry with the new token + 7-day expiry, and re-sends the review email.
-app.post('/api/admin/regenerate-review-token', requireAdmin, async (req, res) => {
-  try {
-    if (!adminInitialized) {
-      return res.status(503).json({ success: false, error: 'Review service unavailable.' });
-    }
-    const { documentId, stage } = req.body || {};
-    if (!documentId || !stage) {
-      return res.status(400).json({ success: false, error: 'documentId and stage are required.' });
-    }
-    const officeId = STAGE_TO_OFFICE_ID[stage] || null;
-    if (!officeId) {
-      return res.status(400).json({ success: false, error: 'Unsupported review stage for token regeneration.' });
-    }
-
-    const db = admin.firestore();
-    const FieldValue = admin.firestore.FieldValue;
-    const Timestamp = admin.firestore.Timestamp;
-
-    const docRef = db.collection('documents').doc(documentId);
-    const docSnap = await docRef.get();
-    if (!docSnap.exists) {
-      return res.status(404).json({ success: false, error: 'Proposal not found.' });
-    }
-    const docData = docSnap.data();
-    if (docData.pipeline?.currentStage !== stage) {
-      return res.status(409).json({
-        success: false,
-        error: `Proposal is currently at "${docData.pipeline?.currentStage || 'no stage'}", not "${stage}".`,
-      });
-    }
-
-    const stages = Array.isArray(docData.pipeline?.stages) ? [...docData.pipeline.stages] : [];
-    let activeIdx = -1;
-    for (let i = stages.length - 1; i >= 0; i -= 1) {
-      if (stages[i]?.stage === stage && stages[i]?.completedAt == null) {
-        activeIdx = i;
-        break;
-      }
-    }
-    if (activeIdx === -1) {
-      return res.status(409).json({ success: false, error: 'No open stage entry to regenerate.' });
-    }
-
-    const oldTokenId = stages[activeIdx].token || null;
-
-    const officeSnap = await db.collection('officeProfiles').doc(officeId).get();
-    const officeProfile = officeSnap.exists ? officeSnap.data() : null;
-    if (!officeProfile?.email) {
-      return res.status(400).json({
-        success: false,
-        error: `Office profile for ${officeId.toUpperCase()} is missing an email. Set it in Office Profiles before regenerating.`,
-      });
-    }
-
-    const now = Timestamp.now();
-    const newExpiresAt = Timestamp.fromMillis(Date.now() + 7 * 24 * 60 * 60 * 1000);
-    const newTokenRef = db.collection('reviewTokens').doc();
-    const newTokenId = newTokenRef.id;
-
-    stages[activeIdx] = {
-      ...stages[activeIdx],
-      token: newTokenId,
-      tokenSentAt: now,
-      tokenExpiresAt: newExpiresAt,
-      firstViewedAt: null,
-      firstViewedBy: null,
-      viewCount: 0,
-      regeneratedAt: now,
-      regeneratedBy: req.authUser.uid,
-      previousToken: oldTokenId,
-    };
-
-    const batch = db.batch();
-
-    if (oldTokenId) {
-      const oldTokenRef = db.collection('reviewTokens').doc(oldTokenId);
-      batch.set(
-        oldTokenRef,
-        {
-          consumed: true,
-          consumedAt: FieldValue.serverTimestamp(),
-          action: 'superseded',
-          supersededBy: newTokenId,
-          supersededByAdmin: req.authUser.uid,
-        },
-        { merge: true }
-      );
-    }
-
-    batch.set(newTokenRef, {
-      tokenId: newTokenId,
-      documentId,
-      stage,
-      createdAt: FieldValue.serverTimestamp(),
-      createdBy: `admin:${req.authUser.uid}`,
-      expiresAt: newExpiresAt,
-      consumed: false,
-      consumedAt: null,
-      action: null,
-      remarks: null,
-      regeneratedFrom: oldTokenId || null,
-    });
-
-    batch.update(docRef, {
-      'pipeline.stages': stages,
-      lastUpdated: FieldValue.serverTimestamp(),
-      updatedBy: `admin:${req.authUser.uid}`,
-    });
-
-    const histRef = db.collection('documentStatusHistory').doc();
-    batch.set(histRef, {
-      documentId,
-      status: 'pending',
-      previousStatus: docData.status,
-      changedBy: req.authUser.uid,
-      remarks: `Review link regenerated for ${stageOfficeLabel(stage)}${oldTokenId ? ' (previous link invalidated)' : ''}`,
-      timestamp: FieldValue.serverTimestamp(),
-    });
-
-    await batch.commit();
-
-    const reviewBaseUrl =
-      process.env.FRONTEND_BASE_URL ||
-      req.headers.origin ||
-      (req.headers.referer ? new URL(req.headers.referer).origin : null) ||
-      'http://localhost:5173';
-
-    let emailStatus = 'sent';
-    try {
-      await transporter.sendMail(
-        buildReviewLinkMail({
-          to: officeProfile.email,
-          documentTitle: docData.title || 'Activity Proposal',
-          reviewUrl: `${reviewBaseUrl}/review?token=${newTokenId}`,
-          officeName: officeProfile.name || defaultOfficeName(stage),
-        })
-      );
-      console.log(`[regenerate] new review link sent to ${officeProfile.email} for ${stage}`);
-    } catch (mailErr) {
-      emailStatus = 'send-failed';
-      console.error('[regenerate] Failed to send review link email:', mailErr);
-    }
-
-    logAdminActionServer({
-      actor: req.authUser,
-      type: 'proposal_review_link_regenerated',
-      targetCollection: 'documents',
-      targetId: documentId,
-      targetLabel: docData.title || documentId,
-      remarks: `Stage ${stage}; sent to ${officeProfile.email}; email ${emailStatus}`,
-    });
-
-    res.json({
-      success: true,
-      newTokenId,
-      expiresAt: newExpiresAt.toMillis(),
-      emailStatus,
-      sentTo: officeProfile.email,
-    });
-  } catch (error) {
-    console.error('Error regenerating review token:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to regenerate review token.',
-      details: error.message,
-    });
-  }
-});
-
-// ── Tokenized comment endpoints ─────────────────────────────────────────────
-// Offices (VPAA, OP, FMS, Procurement) have no portal accounts but still need to
-// discuss specific concerns on the proposal documents. We expose comment CRUD
-// behind the same review token so they can author comments scoped to their
-// stage, and we never let them see comments belonging to other stages.
-
 const requireActiveReviewContext = async (req, res) => {
   const ctx = await validateReviewTokenForRequest(req, res);
   if (!ctx) return null;
@@ -2129,28 +1383,6 @@ const requireActiveReviewContext = async (req, res) => {
 
 const commentScopeForStage = (stage) => STAGE_TO_OFFICE_ID[stage] || null;
 
-// Number of unresolved comments at the office's stage — drives the
-// "Resolve before approving" gate on the ReviewPage UI.
-app.get('/api/review/:token/comment-summary', async (req, res) => {
-  try {
-    const ctx = await requireActiveReviewContext(req, res);
-    if (!ctx) return;
-    const { db, tokenData } = ctx;
-    // Same single-field-then-in-memory pattern as the approval gate to avoid
-    // a composite index requirement on the comments subcollection.
-    const snap = await db
-      .collection('documents').doc(tokenData.documentId)
-      .collection('comments')
-      .where('stage', '==', tokenData.stage)
-      .get();
-    const unresolved = snap.docs.filter((d) => d.data().resolved !== true).length;
-    res.json({ success: true, unresolvedReviewerTotal: unresolved });
-  } catch (error) {
-    console.error('Error reading review comment summary:', error);
-    res.status(500).json({ success: false, error: 'Failed to load comment summary', details: error.message });
-  }
-});
-
 app.get('/api/review/:token/comments', async (req, res) => {
   try {
     const ctx = await requireActiveReviewContext(req, res);
@@ -2167,10 +1399,6 @@ app.get('/api/review/:token/comments', async (req, res) => {
       .get();
     const comments = snap.docs
       .map((d) => ({ id: d.id, ...d.data() }))
-      // Only expose comments that belong to this office's stage. Legacy comments
-      // (no `stage` field) belong to whoever the document was submitted to, so
-      // by default we do NOT show them to tokenized offices — they're treated
-      // as private to the portal-side participants.
       .filter((c) => c.stage === tokenData.stage)
       .sort((a, b) => {
         const ta = a.createdAt?.toMillis?.() || 0;
@@ -2188,22 +1416,20 @@ app.post('/api/review/:token/comments', async (req, res) => {
   try {
     const ctx = await requireActiveReviewContext(req, res);
     if (!ctx) return;
-    const { db, tokenData, officeProfile, docData } = ctx;
+    const { db, tokenData, officeProfile } = ctx;
     const { requirementKey, page, bbox, text } = req.body || {};
     if (!requirementKey || !text?.trim()) {
       return res.status(400).json({ success: false, error: 'requirementKey and non-empty text are required' });
     }
     const scope = commentScopeForStage(tokenData.stage);
-    const trimmed = String(text).trim();
-    const officeLabel = officeProfile?.name || defaultOfficeName(tokenData.stage);
     const docRef = db.collection('documents').doc(tokenData.documentId);
     const result = await docRef.collection('comments').add({
       requirementKey,
       page: typeof page === 'number' ? page : null,
       bbox: bbox || null,
-      text: trimmed,
+      text: String(text).trim(),
       authorUid: null,
-      authorName: officeLabel,
+      authorName: officeProfile?.name || defaultOfficeName(tokenData.stage),
       authorRole: officeProfile?.role || stageOfficeLabel(tokenData.stage),
       authorSide: 'reviewer',
       authorScope: scope,
@@ -2211,24 +1437,6 @@ app.post('/api/review/:token/comments', async (req, res) => {
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       resolved: false,
     });
-
-    // Notify the requesting org so they see the reviewer's comment without
-    // having to actively check the portal. Fire-and-forget.
-    if (docData?.organizationId) {
-      const preview = trimmed.length > 200 ? `${trimmed.slice(0, 200)}…` : trimmed;
-      notifyOrganizationServer({
-        organizationId: docData.organizationId,
-        type: 'proposal_comment',
-        category: 'proposal_comments',
-        title: `New comment on "${docData.title || 'your proposal'}"`,
-        message: `${officeLabel} left a comment on your activity proposal:\n\n${preview}`,
-        link: 'activity-proposals',
-        sourceCollection: 'documents',
-        sourceId: tokenData.documentId,
-        alsoEmail: true,
-      });
-    }
-
     res.json({ success: true, commentId: result.id });
   } catch (error) {
     console.error('Error creating review comment:', error);
@@ -2240,7 +1448,7 @@ app.post('/api/review/:token/comments/:commentId/replies', async (req, res) => {
   try {
     const ctx = await requireActiveReviewContext(req, res);
     if (!ctx) return;
-    const { db, tokenData, officeProfile, docData } = ctx;
+    const { db, tokenData, officeProfile } = ctx;
     const { commentId } = req.params;
     const { text } = req.body || {};
     if (!text?.trim()) {
@@ -2258,35 +1466,17 @@ app.post('/api/review/:token/comments/:commentId/replies', async (req, res) => {
       return res.status(403).json({ success: false, error: 'You cannot reply to a comment that belongs to a different stage.' });
     }
     const scope = commentScopeForStage(tokenData.stage);
-    const trimmed = String(text).trim();
-    const officeLabel = officeProfile?.name || defaultOfficeName(tokenData.stage);
     await commentRef.update({
       replies: admin.firestore.FieldValue.arrayUnion({
-        text: trimmed,
+        text: String(text).trim(),
         authorUid: null,
-        authorName: officeLabel,
+        authorName: officeProfile?.name || defaultOfficeName(tokenData.stage),
         authorRole: officeProfile?.role || stageOfficeLabel(tokenData.stage),
         authorSide: 'reviewer',
         authorScope: scope,
         createdAt: Timestamp.now(),
       }),
     });
-
-    if (docData?.organizationId) {
-      const preview = trimmed.length > 200 ? `${trimmed.slice(0, 200)}…` : trimmed;
-      notifyOrganizationServer({
-        organizationId: docData.organizationId,
-        type: 'proposal_comment_reply',
-        category: 'proposal_comments',
-        title: `New reply on "${docData.title || 'your proposal'}"`,
-        message: `${officeLabel} replied on a comment thread for your activity proposal:\n\n${preview}`,
-        link: 'activity-proposals',
-        sourceCollection: 'documents',
-        sourceId: tokenData.documentId,
-        alsoEmail: true,
-      });
-    }
-
     res.json({ success: true });
   } catch (error) {
     console.error('Error adding review comment reply:', error);
@@ -2344,22 +1534,13 @@ app.delete('/api/review/:token/comments/:commentId', async (req, res) => {
 });
 
 // Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'Email OTP API' });
+app.get(['/health', '/api/health'], (req, res) => {
+  res.json({ status: 'ok', service: 'Email OTP API (Cloud Function)' });
 });
 
-const PORT = process.env.PORT || 3001;
-const HOST = '0.0.0.0';
-app.listen(PORT, HOST, () => {
-  console.log(`Email OTP API server running on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`Send OTP: POST http://localhost:${PORT}/api/send-otp`);
-  console.log(`Reset Password: POST http://localhost:${PORT}/api/reset-password`);
-  console.log(`[server] Build: review-approve-gate-v2 (blocks approve on unresolved comments)`);
-  if (!adminInitialized) {
-    console.log('\n⚠️  WARNING: Firebase Admin SDK not initialized - password reset will not work');
-    console.log('   Make sure serviceAccountKey.json exists in the backend directory');
-  } else {
-    console.log('\n✓ Firebase Admin SDK initialized - password reset is available');
-  }
-});
+// Export the Express app as a Cloud Function
+export const api = onRequest({
+  cors: true,
+  memory: '512MiB',
+  timeoutSeconds: 120,
+}, app);

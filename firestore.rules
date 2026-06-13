@@ -45,8 +45,10 @@ service cloud.firestore {
 
       // Org users and admins create user docs (admin creates org accounts)
       allow create: if isAuthenticated()
-                    && request.auth.uid == userId
-                    && request.resource.data.userId == userId;
+                    && (
+                      (request.auth.uid == userId && request.resource.data.userId == userId)
+                      || isAdmin()
+                    );
 
       // Users update their own doc (not the role field); admins update any
       allow update: if isAuthenticated() && (

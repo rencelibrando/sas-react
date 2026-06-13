@@ -1,5 +1,15 @@
 import { apiJson } from "./apiClient.js";
 
+const API_BASE_URL = import.meta.env.DEV 
+  ? (import.meta.env.VITE_API_BASE_URL || "http://localhost:3001") 
+  : (import.meta.env.VITE_API_BASE_URL || "");
+
+/**
+ * Send OTP email via backend API
+ * @param {string} toEmail - Recipient email address
+ * @param {string} otpCode - 6-digit OTP code
+ * @returns {Promise<void>}
+ */
 export const sendOTPEmail = async (toEmail, otpCode) => {
   try {
     const response = await apiJson("/api/send-otp", {
