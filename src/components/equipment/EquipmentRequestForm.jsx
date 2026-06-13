@@ -171,6 +171,40 @@ const EquipmentRequestForm = ({ onSuccess, onCancel, existing = null }) => {
   const setBor = (field, val) =>
     setForm((f) => ({ ...f, borrowing: { ...f.borrowing, [field]: val } }));
 
+  // Combine a date-only value (YYYY-MM-DD) with a time, preserving the
+  // time-of-day the user may have already chosen on the datetime field.
+  const combineDateWithTime = (dateStr, existingDateTime, defaultTime) => {
+    if (!dateStr) return existingDateTime;
+    const timePart =
+      existingDateTime && existingDateTime.includes("T")
+        ? existingDateTime.split("T")[1]
+        : defaultTime;
+    return `${dateStr}T${timePart}`;
+  };
+
+  // When both activity dates are present, mirror them onto the borrowing
+  // schedule (from → borrow, to → return). Times default to 08:00 / 17:00 but
+  // any time the user already set is kept.
+  const handleActivityDate = (field, val) =>
+    setForm((f) => {
+      const borrowing = { ...f.borrowing, [field]: val };
+      const from = field === "activityDateFrom" ? val : f.borrowing.activityDateFrom;
+      const to = field === "activityDateTo" ? val : f.borrowing.activityDateTo;
+      if (from && to) {
+        borrowing.dateTimeBorrowed = combineDateWithTime(
+          from,
+          f.borrowing.dateTimeBorrowed,
+          "08:00"
+        );
+        borrowing.expectedDateTimeReturn = combineDateWithTime(
+          to,
+          f.borrowing.expectedDateTimeReturn,
+          "17:00"
+        );
+      }
+      return { ...f, borrowing };
+    });
+
   const handleProposalLink = (proposalId) => {
     setForm((f) => ({ ...f, linkedProposalId: proposalId }));
     if (!proposalId) return;
@@ -191,6 +225,7 @@ const EquipmentRequestForm = ({ onSuccess, onCancel, existing = null }) => {
     if (!form.requesting.email.trim()) return "Requester email is required";
     if (!form.borrowing.activityTitle.trim()) return "Activity title is required";
     if (!form.borrowing.purpose.trim()) return "Purpose is required";
+    if (!form.borrowing.locationOfUse.trim()) return "Location of use is required";
     if (!form.borrowing.dateTimeBorrowed) return "Date & time of borrowing is required";
     if (!form.borrowing.expectedDateTimeReturn) return "Expected return date & time is required";
     const borrowMs = new Date(form.borrowing.dateTimeBorrowed).getTime();
@@ -393,7 +428,7 @@ const EquipmentRequestForm = ({ onSuccess, onCancel, existing = null }) => {
             <input
               type="date"
               value={form.borrowing.activityDateFrom}
-              onChange={(e) => setBor("activityDateFrom", e.target.value)}
+              onChange={(e) => handleActivityDate("activityDateFrom", e.target.value)}
             />
           </div>
           <div className="er-field">
@@ -401,15 +436,16 @@ const EquipmentRequestForm = ({ onSuccess, onCancel, existing = null }) => {
             <input
               type="date"
               value={form.borrowing.activityDateTo}
-              onChange={(e) => setBor("activityDateTo", e.target.value)}
+              onChange={(e) => handleActivityDate("activityDateTo", e.target.value)}
             />
           </div>
           <div className="er-field er-field-full">
-            <label>Location of Use</label>
+            <label>Location of Use *</label>
             <input
               type="text"
               value={form.borrowing.locationOfUse}
               onChange={(e) => setBor("locationOfUse", e.target.value)}
+              required
               maxLength={300}
             />
           </div>

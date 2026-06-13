@@ -30,7 +30,9 @@ import {
  * Express backend (`/api/send-notification-email`).
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
+const API_BASE = import.meta.env.DEV 
+  ? (import.meta.env.VITE_API_BASE_URL || "http://localhost:3001") 
+  : (import.meta.env.VITE_API_BASE_URL || "");
 
 export const NOTIFICATION_TYPES = {
   REPORT_DUE_SOON: "report_due_soon",

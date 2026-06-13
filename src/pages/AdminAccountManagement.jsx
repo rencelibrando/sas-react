@@ -17,7 +17,9 @@ import { generateSecurePassword } from "../utils/passwordGenerator";
 import "../styles/colors.css";
 import "./AdminAccountManagement.css";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
+const API_BASE_URL = import.meta.env.DEV 
+  ? (import.meta.env.VITE_API_BASE_URL || "http://localhost:3001") 
+  : (import.meta.env.VITE_API_BASE_URL || "");
 
 const INITIAL_CREATE_FORM = {
   accountCategory: "org", // "org" | "admin"
@@ -554,8 +556,8 @@ const AdminAccountManagement = () => {
 
           {/* ── Office Profile Edit Modal ── */}
           {showOfficeModal && editingOffice && (
-            <div className="acct-modal-overlay" onClick={() => setShowOfficeModal(false)}>
-              <div className="acct-modal acct-modal-sm" onClick={(e) => e.stopPropagation()}>
+            <div className="acct-modal-overlay" onMouseDown={() => setShowOfficeModal(false)}>
+              <div className="acct-modal acct-modal-sm" onMouseDown={(e) => e.stopPropagation()}>
                 <div className="acct-modal-header">
                   <h2>
                     {officeProfiles[editingOffice.id]?.email
@@ -623,8 +625,8 @@ const AdminAccountManagement = () => {
 
           {/* ── Create Account Modal ── */}
           {showCreateModal && (
-            <div className="acct-modal-overlay" onClick={() => setShowCreateModal(false)}>
-              <div className="acct-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="acct-modal-overlay" onMouseDown={() => setShowCreateModal(false)}>
+              <div className="acct-modal" onMouseDown={(e) => e.stopPropagation()}>
                 <div className="acct-modal-header">
                   <h2>Create New Account</h2>
                   <button className="acct-modal-close" onClick={() => setShowCreateModal(false)}>
@@ -807,8 +809,8 @@ const AdminAccountManagement = () => {
 
           {/* ── Reset Password Modal ── */}
           {showResetModal && selectedAccount && (
-            <div className="acct-modal-overlay" onClick={() => setShowResetModal(false)}>
-              <div className="acct-modal acct-modal-sm" onClick={(e) => e.stopPropagation()}>
+            <div className="acct-modal-overlay" onMouseDown={() => setShowResetModal(false)}>
+              <div className="acct-modal acct-modal-sm" onMouseDown={(e) => e.stopPropagation()}>
                 <div className="acct-modal-header">
                   <h2>Reset Password</h2>
                   <button className="acct-modal-close" onClick={() => setShowResetModal(false)}>

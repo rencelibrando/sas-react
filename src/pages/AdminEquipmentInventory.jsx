@@ -6,9 +6,11 @@ import {
   createEquipment,
   updateEquipment,
   setEquipmentActive,
+  seedQuantityOnHand,
   EQUIPMENT_CATEGORIES,
   EQUIPMENT_CATEGORY_LABELS,
 } from "../services/equipmentService";
+import { migrateApprovedReservations } from "../services/equipmentRequestService";
 import AdminLayout from "../components/admin/AdminLayout";
 import LoadingScreen from "../components/LoadingScreen";
 import "../styles/colors.css";
@@ -49,6 +51,15 @@ const AdminEquipmentInventory = () => {
         const userDoc = await getUserById(user.uid);
         setUserData(userDoc);
         if (userDoc?.role !== "Admin") return;
+        // Migrate existing docs that pre-date the quantityOnHand field.
+        await seedQuantityOnHand(user.uid).catch((err) =>
+          console.warn("seedQuantityOnHand failed (non-fatal):", err)
+        );
+        // Deduct quantityOnHand for approved requests that pre-date the
+        // "deduct at approval" model (idempotent, skips already-migrated docs).
+        await migrateApprovedReservations(user.uid).catch((err) =>
+          console.warn("migrateApprovedReservations failed (non-fatal):", err)
+        );
         await loadItems();
       } catch (err) {
         console.error("Error loading equipment inventory:", err);
@@ -223,7 +234,8 @@ const AdminEquipmentInventory = () => {
                   <tr>
                     <th>Name</th>
                     <th>Category</th>
-                    <th>Qty on hand</th>
+                    <th>On Hand</th>
+                    <th>Total Stock</th>
                     <th>Condition</th>
                     <th>Status</th>
                     <th>Actions</th>
@@ -241,6 +253,9 @@ const AdminEquipmentInventory = () => {
                           )}
                         </td>
                         <td>{EQUIPMENT_CATEGORY_LABELS[item.category] || item.category}</td>
+                        <td>
+                          {item.quantityOnHand ?? item.totalQuantity ?? 0}
+                        </td>
                         <td>{item.totalQuantity ?? 0}</td>
                         <td>{item.condition || "—"}</td>
                         <td>

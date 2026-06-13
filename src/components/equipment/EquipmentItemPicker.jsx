@@ -22,6 +22,7 @@ const EquipmentItemPicker = ({ value = [], onChange }) => {
   const [selectedId, setSelectedId] = useState("");
   const [selectedQty, setSelectedQty] = useState(1);
   const [selectedRemarks, setSelectedRemarks] = useState("");
+  const [addError, setAddError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -60,10 +61,16 @@ const EquipmentItemPicker = ({ value = [], onChange }) => {
   );
 
   const addRow = () => {
+    setAddError("");
     if (!selectedId) return;
     const item = catalogById.get(selectedId);
     if (!item) return;
+    const availableQty = item.quantityOnHand ?? item.totalQuantity ?? 0;
     const qty = Math.max(1, Math.floor(Number(selectedQty) || 1));
+    if (qty > availableQty) {
+      setAddError(`Cannot add more than ${availableQty} available items.`);
+      return;
+    }
     onChange([
       ...selectedRows,
       {
@@ -120,18 +127,20 @@ const EquipmentItemPicker = ({ value = [], onChange }) => {
               ? "All items added"
               : "Choose an item to add…"}
           </option>
-          {availableCatalog.map((it) => (
-            <option key={it.equipmentId} value={it.equipmentId}>
-              {it.name} ({EQUIPMENT_CATEGORY_LABELS[it.category] || it.category})
-              {typeof it.totalQuantity === "number"
-                ? ` — ${it.totalQuantity} on hand`
-                : ""}
-            </option>
-          ))}
+          {availableCatalog.map((it) => {
+            const avail = it.quantityOnHand ?? it.totalQuantity;
+            return (
+              <option key={it.equipmentId} value={it.equipmentId}>
+                {it.name} ({EQUIPMENT_CATEGORY_LABELS[it.category] || it.category})
+                {typeof avail === "number" ? ` — ${avail} available` : ""}
+              </option>
+            );
+          })}
         </select>
         <input
           type="number"
           min="1"
+          max={selectedId ? (catalogById.get(selectedId)?.quantityOnHand ?? catalogById.get(selectedId)?.totalQuantity ?? "") : ""}
           className="picker-qty"
           value={selectedQty}
           onChange={(e) => setSelectedQty(e.target.value)}
@@ -154,6 +163,7 @@ const EquipmentItemPicker = ({ value = [], onChange }) => {
           + Add
         </button>
       </div>
+      {addError && <div className="picker-row-warn" style={{ marginTop: "0.5rem", marginBottom: "0.5rem", color: "#c0392b" }}>{addError}</div>}
 
       {selectedRows.length === 0 ? (
         <div className="picker-rows-empty">No items added yet.</div>
@@ -167,17 +177,17 @@ const EquipmentItemPicker = ({ value = [], onChange }) => {
           </div>
           {selectedRows.map((row) => {
             const catalogItem = catalogById.get(row.equipmentId);
-            const overLimit =
-              catalogItem &&
-              typeof catalogItem.totalQuantity === "number" &&
-              row.quantity > catalogItem.totalQuantity;
+            const availableQty = catalogItem
+              ? (catalogItem.quantityOnHand ?? catalogItem.totalQuantity ?? 0)
+              : 0;
+            const overLimit = catalogItem && row.quantity > availableQty;
             return (
               <div className="picker-row" key={row.equipmentId}>
                 <div className="picker-row-name">
                   <div>{row.name}</div>
                   {overLimit && (
                     <div className="picker-row-warn">
-                      Exceeds {catalogItem.totalQuantity} on hand
+                      Exceeds {availableQty} available
                     </div>
                   )}
                 </div>
@@ -185,16 +195,15 @@ const EquipmentItemPicker = ({ value = [], onChange }) => {
                   <input
                     type="number"
                     min="1"
+                    max={availableQty}
                     className="picker-qty"
                     value={row.quantity}
-                    onChange={(e) =>
+                    onChange={(e) => {
+                      const val = Math.floor(Number(e.target.value) || 1);
                       updateRow(row.equipmentId, {
-                        quantity: Math.max(
-                          1,
-                          Math.floor(Number(e.target.value) || 1)
-                        ),
-                      })
-                    }
+                        quantity: Math.max(1, Math.min(val, availableQty)),
+                      });
+                    }}
                   />
                 </div>
                 <div>
