@@ -65,8 +65,9 @@ const getStageLabel = (stage) =>
   STAGE_LABELS[stage] || (stage ? stage.replace(/_/g, " ") : "—");
 
 const REQUEST_STATUS_LABEL = {
-  pending: "Awaiting upload",
-  uploaded: "Uploaded — needs review",
+  pending: "Awaiting response",
+  uploaded: "Response received — needs review",
+  responded: "Response received — needs review",
   resolved: "Resolved",
   cancelled: "Cancelled",
 };
@@ -89,7 +90,7 @@ const AdditionalRequestsPanel = ({
   onPreview,
 }) => {
   const sorted = [...requests].sort((a, b) => {
-    const order = { pending: 0, uploaded: 1, resolved: 2, cancelled: 3 };
+    const order = { pending: 0, responded: 1, uploaded: 1, resolved: 2, cancelled: 3 };
     return (order[a.status] ?? 9) - (order[b.status] ?? 9);
   });
 
@@ -167,7 +168,10 @@ const AdditionalRequestsPanel = ({
       ) : (
         <ul className="additional-requests-list">
           {sorted.map((req) => {
-            const isOpen = req.status === "pending" || req.status === "uploaded";
+            const isOpen =
+              req.status === "pending" ||
+              req.status === "uploaded" ||
+              req.status === "responded";
             const busy = busyId === req.id;
             return (
               <li
@@ -305,7 +309,10 @@ const AdminActivityProposals = () => {
 
   const additionalRequests = selectedProposal?.additionalRequests || [];
   const openAdditionalRequestCount = additionalRequests.filter(
-    (r) => r.status === "pending" || r.status === "uploaded"
+    (r) =>
+      r.status === "pending" ||
+      r.status === "uploaded" ||
+      r.status === "responded"
   ).length;
 
   const fileInputRef = useRef(null);

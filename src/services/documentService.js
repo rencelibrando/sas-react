@@ -18,6 +18,7 @@ import { getUserById } from "./userService";
 import { getRequiredKeys, REQUIREMENT_LABELS } from "../utils/proposalConstants";
 import { createReportRequirements } from "./reportService";
 import { logAdminAction } from "./adminActivityLogService";
+import { apiJson } from "./apiClient";
 import {
   notifyOrganization,
   NOTIFICATION_TYPES,
@@ -1234,9 +1235,7 @@ export const completeSASReview = async (documentId, adminId, endorsementFile) =>
   if (data.pipeline?.currentStage !== "sas_review") {
     throw new Error("Proposal is not at the SAS review stage");
   }
-  const openRequests = (data.additionalRequests || []).filter(
-    (r) => r.status === "pending" || r.status === "uploaded"
-  );
+  const openRequests = (data.additionalRequests || []).filter(isOpenAdditionalRequest);
   if (openRequests.length > 0) {
     throw new Error(
       `Cannot forward — ${openRequests.length} additional document request(s) still open. Mark each as Resolved before forwarding.`
@@ -1915,25 +1914,49 @@ const validateAdditionalFile = (file) => {
   }
 };
 
+// A request is "open" (still blocking the pipeline) until a reviewer resolves or
+// cancels it. Legacy entries used status "uploaded"; new responses use
+// "responded" — both count as open/awaiting-review here.
+export const isOpenAdditionalRequest = (r) =>
+  r && r.status !== "resolved" && r.status !== "cancelled";
+
+// Human-readable phrasing for what a reviewer is asking the submitter to provide.
+export const REQUEST_TYPE_VERB = {
+  clarification: "a clarification",
+  document: "an additional document",
+  both: "a revision and clarification",
+};
+
 /**
- * SAS admin creates a new additional-document request on a proposal.
- * Only allowed while pipeline.currentStage === "sas_review".
+ * Reviewer (SAS admin via portal, or an office via the tokenized backend) creates
+ * a new request on a proposal. Pauses the proposal in place at its current stage —
+ * the submitter responds inline rather than resubmitting the whole proposal.
+ *
+ * `type` controls what the submitter may provide:
+ *   "clarification" — written reply only
+ *   "document"      — file upload only (legacy default)
+ *   "both"          — written reply and/or file
  */
 export const createAdditionalRequest = async ({
   documentId,
   label,
   description,
   adminId,
+  type = "document",
+  requestedByOffice = "SAS",
 }) => {
   if (!documentId || !adminId) throw new Error("documentId and adminId are required");
   if (!label?.trim()) throw new Error("Document label is required");
+
+  const reqType = ["clarification", "document", "both"].includes(type) ? type : "document";
 
   const docRef = doc(db, "documents", documentId);
   const snap = await getDoc(docRef);
   if (!snap.exists()) throw new Error("Proposal not found");
   const data = snap.data();
-  if (data.pipeline?.currentStage !== "sas_review") {
-    throw new Error("Additional documents can only be requested during SAS review");
+  const stage = data.pipeline?.currentStage;
+  if (!stage) {
+    throw new Error("Requests can only be raised while the proposal is in an active review stage");
   }
 
   const requestId = doc(collection(db, "documents")).id;
@@ -1942,8 +1965,11 @@ export const createAdditionalRequest = async ({
     id: requestId,
     label: label.trim(),
     description: description?.trim() || "",
+    type: reqType,
+    stage,
     status: "pending",
     requestedBy: adminId,
+    requestedByOffice,
     requestedAt: now,
   };
 
@@ -1960,7 +1986,7 @@ export const createAdditionalRequest = async ({
     status: data.status || "pending",
     previousStatus: data.status || "pending",
     changedBy: adminId,
-    remarks: `SAS requested additional document: ${label.trim()}`,
+    remarks: `${requestedByOffice} requested ${REQUEST_TYPE_VERB[reqType]}: ${label.trim()}`,
     timestamp: serverTimestamp(),
   });
 
@@ -1978,6 +2004,7 @@ export const uploadAdditionalDocument = async ({
   requestId,
   file,
   userId,
+  responseText,
 }) => {
   if (!documentId || !requestId || !userId) {
     throw new Error("documentId, requestId, and userId are required");
@@ -2039,7 +2066,10 @@ export const uploadAdditionalDocument = async ({
 
   requests[idx] = {
     ...current,
-    status: "uploaded",
+    status: "responded",
+    ...(responseText?.trim()
+      ? { responseText: responseText.trim(), respondedAt: uploadedAt }
+      : {}),
     file: {
       fileUrl,
       fileName: file.name,
@@ -2074,6 +2104,95 @@ export const uploadAdditionalDocument = async ({
 
   await batch.commit();
   return { fileUrl, version: newVersion };
+};
+
+/**
+ * Org / ISG submitter posts a written clarification reply (no file) for a request
+ * whose type is "clarification" or "both". Sets status to "responded".
+ */
+export const respondToAdditionalRequest = async ({
+  documentId,
+  requestId,
+  responseText,
+  userId,
+}) => {
+  if (!documentId || !requestId || !userId) {
+    throw new Error("documentId, requestId, and userId are required");
+  }
+  if (!responseText?.trim()) throw new Error("A written reply is required");
+
+  const docRef = doc(db, "documents", documentId);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) throw new Error("Proposal not found");
+  const data = snap.data();
+
+  if (data.organizationId) {
+    const user = await getUserById(userId);
+    if (!user || user.organizationId !== data.organizationId) {
+      throw new Error("Only members of the requesting organization may respond");
+    }
+  }
+
+  const requests = Array.isArray(data.additionalRequests)
+    ? [...data.additionalRequests]
+    : [];
+  const idx = requests.findIndex((r) => r.id === requestId);
+  if (idx === -1) throw new Error("Request not found");
+  const current = requests[idx];
+  if (current.status === "resolved" || current.status === "cancelled") {
+    throw new Error("This request is closed and no longer accepts replies");
+  }
+
+  const now = Timestamp.fromDate(new Date());
+  requests[idx] = {
+    ...current,
+    status: "responded",
+    responseText: responseText.trim(),
+    respondedAt: now,
+  };
+
+  const batch = writeBatch(db);
+  batch.update(docRef, {
+    additionalRequests: requests,
+    lastUpdated: serverTimestamp(),
+    updatedBy: userId,
+  });
+
+  const histRef = doc(collection(db, "documentStatusHistory"));
+  batch.set(histRef, {
+    documentId,
+    status: data.status || "pending",
+    previousStatus: data.status || "pending",
+    changedBy: userId,
+    remarks: `Submitted clarification reply: ${current.label}`,
+    timestamp: serverTimestamp(),
+  });
+
+  await batch.commit();
+};
+
+/**
+ * After the submitter has written their response to a request, ask the backend
+ * to re-notify the requesting office with a fresh review link (office-stage
+ * requests only). Best-effort — the response is already saved in Firestore, so
+ * a notify failure must not surface as a hard error to the submitter.
+ */
+export const notifyReviewerOfResponse = async ({ documentId, requestId }) => {
+  try {
+    const res = await apiJson(
+      "/api/review/respond",
+      { documentId, requestId },
+      { auth: true }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) {
+      console.warn("notifyReviewerOfResponse failed:", data?.error || res.status);
+    }
+    return data;
+  } catch (err) {
+    console.warn("notifyReviewerOfResponse error:", err?.message || err);
+    return { success: false };
+  }
 };
 
 /**
@@ -2166,8 +2285,8 @@ export const reopenAdditionalRequest = async ({
   if (idx === -1) throw new Error("Request not found");
   const current = requests[idx];
 
-  // Restore status based on whether a file exists.
-  const nextStatus = current.file ? "uploaded" : "pending";
+  // Restore status based on whether the submitter already responded.
+  const nextStatus = current.file || current.responseText ? "responded" : "pending";
   requests[idx] = {
     ...current,
     status: nextStatus,

@@ -22,7 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-*.md
+*.md 
 *.claude
 
 # Secrets — never commit these

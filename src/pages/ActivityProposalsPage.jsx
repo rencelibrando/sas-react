@@ -7,6 +7,8 @@ import {
   getDocumentById,
   getDocumentStatusHistory,
   uploadAdditionalDocument,
+  respondToAdditionalRequest,
+  notifyReviewerOfResponse,
 } from "../services/documentService";
 import Navbar from "../components/Navbar";
 import DashboardLayout from "../components/DashboardLayout";
@@ -15,7 +17,7 @@ import LoadingScreen from "../components/LoadingScreen";
 import DocumentPreviewModal from "../components/documents/DocumentPreviewModal";
 import { subscribeToCommentSummary } from "../services/commentService";
 import { formatDate, formatDateTime, getProposalDisplayStatus, getProposalHistoryDisplay, getPipelineStageLabel, getStageOffice } from "../utils/formatters";
-import { REQUIREMENT_LABELS } from "../utils/proposalConstants";
+import { REQUIREMENT_LABELS, REQUEST_STATUS_LABELS } from "../utils/proposalConstants";
 import "../styles/colors.css";
 import "./ActivityProposalsPage.css";
 
@@ -116,11 +118,93 @@ const PipelineProgress = ({ proposal }) => {
   );
 };
 
-const ORG_REQUEST_STATUS_LABEL = {
-  pending: "Awaiting your upload",
-  uploaded: "Uploaded — under SAS review",
-  resolved: "Resolved by SAS",
-  cancelled: "Cancelled by SAS",
+const OrgRequestItem = ({ req, busy, onUpload, onSendReply, onPreview }) => {
+  const [reply, setReply] = useState("");
+  const isClosed = req.status === "resolved" || req.status === "cancelled";
+  const type = req.type || "document";
+  const wantsText = type === "clarification" || type === "both";
+  const wantsFile = type === "document" || type === "both";
+  const office = req.requestedByOffice || "SAS";
+
+  return (
+    <li className={`additional-request-item status-${req.status}`}>
+      <div className="additional-request-main">
+        <div className="additional-request-label">
+          {req.label}
+          <span className="additional-request-from"> — requested by {office}</span>
+        </div>
+        {req.description && (
+          <p className="additional-request-desc">{req.description}</p>
+        )}
+        <div className="additional-request-status">
+          <span className={`request-status-pill status-${req.status}`}>
+            {REQUEST_STATUS_LABELS[req.status] || req.status}
+          </span>
+        </div>
+        {req.responseText && (
+          <p className="additional-request-reply">
+            <strong>Your reply:</strong> {req.responseText}
+          </p>
+        )}
+        {req.file && (
+          <div className="additional-request-file">
+            <button
+              type="button"
+              className="file-download-link file-preview-btn"
+              onClick={() => onPreview(req)}
+            >
+              📄 {req.file.fileName}
+              {req.file.version > 1 ? ` (v${req.file.version})` : ""}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {!isClosed && (
+        <div className="additional-request-actions">
+          {wantsText && (
+            <div className="additional-request-reply-group">
+              <textarea
+                className="additional-request-reply-input"
+                rows={3}
+                placeholder={`Write your reply to ${office}...`}
+                value={reply}
+                onChange={(e) => setReply(e.target.value)}
+                disabled={busy}
+              />
+              <button
+                type="button"
+                className="form-button form-button-primary"
+                disabled={busy || !reply.trim()}
+                onClick={() => onSendReply(req.id, reply.trim(), () => setReply(""))}
+              >
+                {busy ? "Sending..." : "Send reply"}
+              </button>
+            </div>
+          )}
+          {wantsFile && (
+            <label
+              className={`form-button form-button-primary ${busy ? "is-busy" : ""}`}
+              style={{ cursor: busy ? "wait" : "pointer" }}
+            >
+              {busy ? "Uploading..." : req.file ? "Replace file" : "Upload file"}
+              <input
+                type="file"
+                accept="application/pdf,.pdf,.doc,.docx,image/jpeg,image/png"
+                style={{ display: "none" }}
+                disabled={busy}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (file) onUpload(req.id, file);
+                }}
+              />
+            </label>
+          )}
+        </div>
+      )}
+    </li>
+  );
 };
 
 const OrgAdditionalRequestsPanel = ({
@@ -128,90 +212,43 @@ const OrgAdditionalRequestsPanel = ({
   busyId,
   error,
   onUpload,
+  onSendReply,
   onPreview,
 }) => {
   const sorted = [...requests].sort((a, b) => {
-    const order = { pending: 0, uploaded: 1, resolved: 2, cancelled: 3 };
+    const order = { pending: 0, responded: 1, uploaded: 1, resolved: 2, cancelled: 3 };
     return (order[a.status] ?? 9) - (order[b.status] ?? 9);
   });
   const openCount = sorted.filter(
-    (r) => r.status === "pending" || r.status === "uploaded"
+    (r) => r.status === "pending" || r.status === "uploaded" || r.status === "responded"
   ).length;
 
   return (
     <div className="org-additional-requests-section">
       <h4 className="actions-section-title">
-        Additional Documents Requested by SAS
+        Requests from Reviewers
         {openCount > 0 && (
           <span className="open-count-pill"> {openCount} open</span>
         )}
       </h4>
       <p className="org-additional-help">
-        SAS has requested the following supplementary documents for this proposal.
-        Upload the file for each pending item. SAS will review and resolve each
-        request before forwarding your proposal to the VPAA.
+        A reviewing office has asked for a clarification and/or an additional
+        document for this proposal. Respond to each open item below — your
+        proposal keeps its place in the pipeline, so there is no need to resubmit
+        the whole proposal. The reviewer is notified once you respond.
       </p>
       {error && <p className="form-error">{error}</p>}
       <ul className="additional-requests-list">
-        {sorted.map((req) => {
-          const busy = busyId === req.id;
-          const isClosed = req.status === "resolved" || req.status === "cancelled";
-          return (
-            <li
-              key={req.id}
-              className={`additional-request-item status-${req.status}`}
-            >
-              <div className="additional-request-main">
-                <div className="additional-request-label">{req.label}</div>
-                {req.description && (
-                  <p className="additional-request-desc">{req.description}</p>
-                )}
-                <div className="additional-request-status">
-                  <span className={`request-status-pill status-${req.status}`}>
-                    {ORG_REQUEST_STATUS_LABEL[req.status] || req.status}
-                  </span>
-                </div>
-                {req.file && (
-                  <div className="additional-request-file">
-                    <button
-                      type="button"
-                      className="file-download-link file-preview-btn"
-                      onClick={() => onPreview(req)}
-                    >
-                      📄 {req.file.fileName}
-                      {req.file.version > 1 ? ` (v${req.file.version})` : ""}
-                    </button>
-                  </div>
-                )}
-              </div>
-              {!isClosed && (
-                <div className="additional-request-actions">
-                  <label
-                    className={`form-button form-button-primary ${busy ? "is-busy" : ""}`}
-                    style={{ cursor: busy ? "wait" : "pointer" }}
-                  >
-                    {busy
-                      ? "Uploading..."
-                      : req.file
-                      ? "Replace file"
-                      : "Upload file"}
-                    <input
-                      type="file"
-                      accept="application/pdf,.pdf,.doc,.docx,image/jpeg,image/png"
-                      style={{ display: "none" }}
-                      disabled={busy}
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        e.target.value = "";
-                        if (file) onUpload(req.id, file);
-                      }}
-                    />
-                  </label>
-                </div>
-              )}
-            </li>
-          );
-        })}
+        {sorted.map((req) => (
+          <OrgRequestItem
+            key={req.id}
+            req={req}
+            busy={busyId === req.id}
+            onUpload={onUpload}
+            onSendReply={onSendReply}
+            onPreview={onPreview}
+          />
+        ))}
       </ul>
     </div>
   );
@@ -302,6 +339,16 @@ const ActivityProposalsPage = ({ orgType: orgTypeProp = null }) => {
   const [additionalUploadBusyId, setAdditionalUploadBusyId] = useState(null);
   const [additionalUploadError, setAdditionalUploadError] = useState("");
 
+  const refreshAfterResponse = async () => {
+    await handleViewProposal(selectedProposal.documentId);
+    if (userData?.organizationId) {
+      const docs = await getDocumentsByOrganization(userData.organizationId, {
+        documentType: "activity_proposal",
+      });
+      setProposals(docs);
+    }
+  };
+
   const handleUploadAdditional = async (requestId, file) => {
     if (!selectedProposal || !file) return;
     setAdditionalUploadBusyId(requestId);
@@ -313,16 +360,38 @@ const ActivityProposalsPage = ({ orgType: orgTypeProp = null }) => {
         file,
         userId: auth.currentUser.uid,
       });
-      // Refresh detail + list
-      await handleViewProposal(selectedProposal.documentId);
-      if (userData?.organizationId) {
-        const docs = await getDocumentsByOrganization(userData.organizationId, {
-          documentType: "activity_proposal",
-        });
-        setProposals(docs);
-      }
+      // Re-notify the requesting office (office-stage requests get a fresh link).
+      await notifyReviewerOfResponse({
+        documentId: selectedProposal.documentId,
+        requestId,
+      });
+      await refreshAfterResponse();
     } catch (err) {
       setAdditionalUploadError(err.message || "Failed to upload document.");
+    } finally {
+      setAdditionalUploadBusyId(null);
+    }
+  };
+
+  const handleSendReply = async (requestId, responseText, onDone) => {
+    if (!selectedProposal || !responseText) return;
+    setAdditionalUploadBusyId(requestId);
+    setAdditionalUploadError("");
+    try {
+      await respondToAdditionalRequest({
+        documentId: selectedProposal.documentId,
+        requestId,
+        responseText,
+        userId: auth.currentUser.uid,
+      });
+      await notifyReviewerOfResponse({
+        documentId: selectedProposal.documentId,
+        requestId,
+      });
+      onDone?.();
+      await refreshAfterResponse();
+    } catch (err) {
+      setAdditionalUploadError(err.message || "Failed to send reply.");
     } finally {
       setAdditionalUploadBusyId(null);
     }
@@ -657,6 +726,7 @@ const ActivityProposalsPage = ({ orgType: orgTypeProp = null }) => {
                           busyId={additionalUploadBusyId}
                           error={additionalUploadError}
                           onUpload={handleUploadAdditional}
+                          onSendReply={handleSendReply}
                           onPreview={(req) =>
                             setPreviewFile({
                               fileUrl: req.file.fileUrl,

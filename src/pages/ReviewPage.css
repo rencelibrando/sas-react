@@ -200,6 +200,136 @@ button.review-file-link {
   color: #fff;
 }
 
+.review-btn-request {
+  background: #fff;
+  color: #1d4ed8;
+  border-color: #1d4ed8;
+}
+
+.review-btn-request.is-selected,
+.review-btn-request:hover:not(:disabled) {
+  background: #1d4ed8;
+  color: #fff;
+}
+
+.review-btn-small {
+  padding: 0.4rem 0.85rem;
+  font-size: 0.85rem;
+}
+
+.review-request-form {
+  margin-top: 1rem;
+  padding: 0.9rem 1rem;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 8px;
+}
+
+.review-request-help {
+  margin: 0 0 0.75rem;
+  font-size: 0.9rem;
+  color: #334155;
+}
+
+.review-request-types {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.4rem 0 0.9rem;
+}
+
+.review-request-type-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.review-request-label-input {
+  width: 100%;
+  border: 1px solid #c7d2fe;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 0.9rem;
+  font-family: inherit;
+}
+
+.review-requests-section {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+}
+
+.review-requests-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.review-request-item {
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+  background: #fff;
+}
+
+.review-request-item-label {
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.review-request-item-desc {
+  margin: 0.25rem 0;
+  font-size: 0.88rem;
+  color: #475569;
+}
+
+.review-request-item-reply {
+  margin: 0.4rem 0;
+  font-size: 0.88rem;
+  color: #0d47a1;
+  background: #e3f2fd;
+  border-radius: 4px;
+  padding: 6px 10px;
+  white-space: pre-wrap;
+}
+
+.review-request-item-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.review-request-item .request-status-pill {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  background: #fff8e1;
+  border: 1px solid #f0c419;
+  color: #8a6d00;
+}
+
+.review-request-item.status-responded .request-status-pill {
+  background: #e3f2fd;
+  border-color: #64b5f6;
+  color: #0d47a1;
+}
+
+.review-request-item.status-resolved .request-status-pill {
+  background: #e8f5e9;
+  border-color: #66bb6a;
+  color: #1b5e20;
+}
+
 .review-remarks-group {
   margin-top: 1rem;
 }

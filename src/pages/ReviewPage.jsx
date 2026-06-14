@@ -112,11 +112,16 @@ const ReviewPage = () => {
   const [loadError, setLoadError] = useState("");
   const [review, setReview] = useState(null);
 
-  const [decision, setDecision] = useState(null); // "approve" | "return"
+  const [decision, setDecision] = useState(null); // "approve" | "return" | "request"
   const [remarks, setRemarks] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [submitSuccess, setSubmitSuccess] = useState("");
+
+  // "Request from Submitter" form state
+  const [requestType, setRequestType] = useState("both"); // clarification | document | both
+  const [requestLabel, setRequestLabel] = useState("");
+  const [resolvingId, setResolvingId] = useState(null);
 
   // Signature preview modal state
   const [showPreviewModal, setShowPreviewModal] = useState(false);
@@ -128,6 +133,7 @@ const ReviewPage = () => {
   const [previewTimestamp, setPreviewTimestamp] = useState(null);
   const sigFileInputRef = useRef(null);
   const [unresolvedReviewerTotal, setUnresolvedReviewerTotal] = useState(0);
+  const [openRequestTotal, setOpenRequestTotal] = useState(0);
   const [summaryReady, setSummaryReady] = useState(false);
 
   // Poll the office's open-comment count so the Approve gate stays in sync
@@ -140,6 +146,7 @@ const ReviewPage = () => {
       const data = await r.json();
       if (r.ok && data.success) {
         setUnresolvedReviewerTotal(data.unresolvedReviewerTotal || 0);
+        setOpenRequestTotal(data.openRequestTotal || 0);
         setSummaryReady(true);
         return;
       }
@@ -283,8 +290,79 @@ const ReviewPage = () => {
     }
   };
 
+  const refetchReview = async () => {
+    if (!token) return;
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/review/${encodeURIComponent(token)}`);
+      const data = await response.json();
+      if (response.ok && data.success) setReview(data.review);
+    } catch (err) {
+      console.warn("refetchReview failed:", err);
+    }
+  };
+
+  const submitRequest = async () => {
+    setSubmitting(true);
+    setSubmitError("");
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/review/${encodeURIComponent(token)}/request`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: requestType,
+            label: requestLabel.trim(),
+            description: remarks.trim(),
+          }),
+        }
+      );
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data?.error || "Failed to submit request.");
+      }
+      setSubmitSuccess(
+        "Request sent to the submitting organization. They will respond in the SAS Portal, and you'll receive a fresh review link by email once they do. You may close this tab."
+      );
+    } catch (err) {
+      setSubmitError(err.message || "Failed to submit request.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const resolveRequest = async (requestId) => {
+    setResolvingId(requestId);
+    setSubmitError("");
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/review/${encodeURIComponent(token)}/request/${encodeURIComponent(requestId)}/resolve`,
+        { method: "POST" }
+      );
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data?.error || "Failed to resolve request.");
+      }
+      await refetchReview();
+      await refreshCommentSummary();
+    } catch (err) {
+      setSubmitError(err.message || "Failed to resolve request.");
+    } finally {
+      setResolvingId(null);
+    }
+  };
+
   const handleSubmit = async () => {
     if (!decision) return;
+    if (decision === "request") {
+      if (!requestLabel.trim()) {
+        setSubmitError("Please give the request a short title.");
+        return;
+      }
+      setSubmitError("");
+      await submitRequest();
+      return;
+    }
     if (decision === "return" && !remarks.trim()) {
       setSubmitError("Please provide remarks before returning the proposal.");
       return;
@@ -299,6 +377,12 @@ const ReviewPage = () => {
       if (unresolvedReviewerTotal > 0) {
         setSubmitError(
           `You still have ${unresolvedReviewerTotal} unresolved comment${unresolvedReviewerTotal === 1 ? "" : "s"} on this proposal. Resolve them or return the proposal for revision before approving.`
+        );
+        return;
+      }
+      if (openRequestTotal > 0) {
+        setSubmitError(
+          `You have ${openRequestTotal} open request${openRequestTotal === 1 ? "" : "s"} awaiting the submitter's response or your resolution. Resolve ${openRequestTotal === 1 ? "it" : "them"} below before approving.`
         );
         return;
       }
@@ -407,6 +491,66 @@ const ReviewPage = () => {
                 </section>
               )}
 
+              {review.additionalRequests?.length > 0 && (
+                <section className="review-section review-requests-section">
+                  <h3 className="review-section-title">Requests you raised</h3>
+                  <ul className="review-requests-list">
+                    {review.additionalRequests.map((r) => {
+                      const closed = r.status === "resolved" || r.status === "cancelled";
+                      return (
+                        <li key={r.id} className={`review-request-item status-${r.status}`}>
+                          <div className="review-request-item-label">{r.label}</div>
+                          {r.description && (
+                            <p className="review-request-item-desc">{r.description}</p>
+                          )}
+                          {r.responseText && (
+                            <p className="review-request-item-reply">
+                              <strong>Submitter's reply:</strong> {r.responseText}
+                            </p>
+                          )}
+                          {r.file && (
+                            <button
+                              type="button"
+                              className="review-file-link"
+                              onClick={() =>
+                                setPreviewFile({
+                                  fileUrl: r.file.fileUrl,
+                                  fileName: r.file.fileName,
+                                  title: r.label,
+                                  requirementKey: `additional:${r.id}`,
+                                })
+                              }
+                            >
+                              📄 {r.file.fileName}
+                              {r.file.version > 1 ? ` (v${r.file.version})` : ""}
+                            </button>
+                          )}
+                          <div className="review-request-item-footer">
+                            <span className={`request-status-pill status-${r.status}`}>
+                              {closed
+                                ? "Resolved"
+                                : r.status === "responded"
+                                ? "Response received"
+                                : "Awaiting response"}
+                            </span>
+                            {!closed && (
+                              <button
+                                type="button"
+                                className="review-btn review-btn-secondary review-btn-small"
+                                onClick={() => resolveRequest(r.id)}
+                                disabled={resolvingId === r.id}
+                              >
+                                {resolvingId === r.id ? "Resolving..." : "Mark Resolved"}
+                              </button>
+                            )}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </section>
+              )}
+
               <section className="review-decision-section">
                 <h3 className="review-section-title">Your Decision</h3>
                 <div className="review-decision-buttons">
@@ -420,6 +564,14 @@ const ReviewPage = () => {
                   </button>
                   <button
                     type="button"
+                    className={`review-btn review-btn-request ${decision === "request" ? "is-selected" : ""}`}
+                    onClick={() => { setDecision("request"); setSubmitError(""); }}
+                    disabled={submitting}
+                  >
+                    Request from Submitter
+                  </button>
+                  <button
+                    type="button"
                     className={`review-btn review-btn-return ${decision === "return" ? "is-selected" : ""}`}
                     onClick={() => { setDecision("return"); setSubmitError(""); }}
                     disabled={submitting}
@@ -428,10 +580,52 @@ const ReviewPage = () => {
                   </button>
                 </div>
 
+                {decision === "request" && (
+                  <div className="review-request-form">
+                    <p className="review-request-help">
+                      Ask the organization for a clarification and/or an additional
+                      document <strong>without returning the whole proposal</strong>.
+                      It stays at this stage; you'll get a fresh review link by email
+                      once they respond.
+                    </p>
+                    <label className="review-remarks-label">What do you need?</label>
+                    <div className="review-request-types">
+                      {[
+                        ["both", "Clarification and/or document"],
+                        ["clarification", "Written clarification only"],
+                        ["document", "Document upload only"],
+                      ].map(([value, label]) => (
+                        <label key={value} className="review-request-type-option">
+                          <input
+                            type="radio"
+                            name="requestType"
+                            value={value}
+                            checked={requestType === value}
+                            onChange={() => setRequestType(value)}
+                            disabled={submitting}
+                          />
+                          {label}
+                        </label>
+                      ))}
+                    </div>
+                    <label className="review-remarks-label">Request title (required)</label>
+                    <input
+                      type="text"
+                      className="review-request-label-input"
+                      value={requestLabel}
+                      onChange={(e) => setRequestLabel(e.target.value)}
+                      placeholder="e.g. Revised budgetary allocation"
+                      disabled={submitting}
+                    />
+                  </div>
+                )}
+
                 {decision && (
                   <div className="review-remarks-group">
                     <label className="review-remarks-label">
-                      Remarks {decision === "return" ? "(required)" : "(optional)"}
+                      {decision === "request"
+                        ? "Instructions / message to the submitter (optional)"
+                        : `Remarks ${decision === "return" ? "(required)" : "(optional)"}`}
                     </label>
                     <textarea
                       className="review-remarks-input"
@@ -441,6 +635,8 @@ const ReviewPage = () => {
                       placeholder={
                         decision === "return"
                           ? "State the reason for returning this proposal..."
+                          : decision === "request"
+                          ? "Describe what you need from the organization..."
                           : "Optional notes for the SAS office..."
                       }
                       disabled={submitting}
@@ -458,6 +654,15 @@ const ReviewPage = () => {
                   </p>
                 )}
 
+                {decision === "approve" && openRequestTotal > 0 && (
+                  <p className="review-form-error">
+                    ⚠ You have {openRequestTotal} open request
+                    {openRequestTotal === 1 ? "" : "s"} on this proposal. Resolve
+                    {openRequestTotal === 1 ? " it" : " them"} in the
+                    "Requests you raised" section above before approving.
+                  </p>
+                )}
+
                 {submitError && <p className="review-form-error">{submitError}</p>}
 
                 {decision && (
@@ -468,14 +673,19 @@ const ReviewPage = () => {
                     disabled={
                       submitting ||
                       (decision === "return" && !remarks.trim()) ||
+                      (decision === "request" && !requestLabel.trim()) ||
                       (decision === "approve" &&
-                        (!summaryReady || unresolvedReviewerTotal > 0))
+                        (!summaryReady ||
+                          unresolvedReviewerTotal > 0 ||
+                          openRequestTotal > 0))
                     }
                   >
                     {submitting
                       ? "Submitting..."
                       : decision === "approve"
                       ? "Continue to Signature Preview"
+                      : decision === "request"
+                      ? "Send Request"
                       : "Submit Decision"}
                   </button>
                 )}

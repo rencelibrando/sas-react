@@ -139,6 +139,22 @@ export const getProposalDisplayStatus = (proposal) => {
 
   const currentStage = proposal?.pipeline?.currentStage;
   if (currentStage) {
+    // A reviewer raised a request and the proposal is paused in place awaiting
+    // the submitter's response (or the reviewer's re-review of that response).
+    const openStageReqs = (proposal.additionalRequests || []).filter(
+      (r) =>
+        (r.stage || "sas_review") === currentStage &&
+        r.status !== "resolved" &&
+        r.status !== "cancelled"
+    );
+    if (openStageReqs.length > 0) {
+      const reqOffice = STAGE_OFFICE[currentStage] || "Reviewer";
+      const anyPending = openStageReqs.some((r) => r.status === "pending");
+      return anyPending
+        ? { label: `${reqOffice} requested a response`, badgeClass: "status-badge-returned" }
+        : { label: `Response under ${reqOffice} review`, badgeClass: "status-badge-review" };
+    }
+
     const activeEntry = getActiveStageEntry(proposal);
     const office = STAGE_OFFICE[currentStage];
     // The office now holding the document has opened it.

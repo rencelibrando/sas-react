@@ -41,3 +41,26 @@ export const isConditionalKey = (key) =>
   key === "speaker_profile" || key === "resolution" || key === "fund_utilization";
 
 export const isISGSubmitter = (role) => role === "ISG";
+
+// ── Reviewer "Request from Submitter" feature ────────────────────────────────
+// What a reviewer can ask the submitter to provide in response to a request.
+export const REQUEST_TYPES = ["clarification", "document", "both"];
+
+export const REQUEST_TYPE_LABELS = {
+  clarification: "Written clarification only",
+  document: "Document upload only",
+  both: "Clarification and/or document",
+};
+
+// Submitter-facing status labels for a request lifecycle.
+export const REQUEST_STATUS_LABELS = {
+  pending: "Awaiting your response",
+  uploaded: "Response sent — under review", // legacy entries
+  responded: "Response sent — under review",
+  resolved: "Resolved by reviewer",
+  cancelled: "Cancelled",
+};
+
+// A request still blocks the pipeline until the reviewer resolves or cancels it.
+export const isOpenRequest = (r) =>
+  r && r.status !== "resolved" && r.status !== "cancelled";

@@ -610,10 +610,45 @@ button.file-download-link {
   color: #8a6d00;
 }
 
-.request-status-pill.status-uploaded {
+.request-status-pill.status-uploaded,
+.request-status-pill.status-responded {
   background: #e3f2fd;
   border-color: #64b5f6;
   color: #0d47a1;
+}
+
+.additional-request-from {
+  font-weight: 500;
+  color: #800020;
+  font-size: 0.85rem;
+}
+
+.additional-request-reply {
+  margin: 0.4rem 0 0;
+  font-size: 0.88rem;
+  color: #333;
+  background: #f0f4f8;
+  border-left: 3px solid #64b5f6;
+  padding: 6px 10px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+}
+
+.additional-request-reply-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  width: 100%;
+}
+
+.additional-request-reply-input {
+  width: 100%;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 0.9rem;
+  font-family: inherit;
+  resize: vertical;
 }
 
 .request-status-pill.status-resolved {

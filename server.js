@@ -689,6 +689,13 @@ const stageOfficeLabel = (stage) => {
   }
 };
 
+// Human-readable phrasing for what a reviewer is asking the submitter to provide.
+const REQUEST_VERB = {
+  clarification: 'a clarification',
+  document: 'an additional document',
+  both: 'a revision and clarification',
+};
+
 // Friendly default office name for emails when the office profile is missing one.
 const defaultOfficeName = (stage) => {
   switch (stage) {
@@ -1453,6 +1460,21 @@ app.get('/api/review/:token', async (req, res) => {
           fileName: f.fileName,
           requirementKey: f.requirementKey || null,
         })),
+        // Requests this office raised on a previous link, surfaced so it can see
+        // the submitter's response after being re-notified and mark them resolved.
+        additionalRequests: (docData.additionalRequests || [])
+          .filter((r) => (r.stage || 'sas_review') === tokenData.stage)
+          .map((r) => ({
+            id: r.id,
+            label: r.label,
+            description: r.description || '',
+            type: r.type || 'document',
+            status: r.status,
+            responseText: r.responseText || '',
+            file: r.file
+              ? { fileUrl: r.file.fileUrl, fileName: r.file.fileName, version: r.file.version || 1 }
+              : null,
+          })),
         expiresAt: expiresAtMillis || null,
       },
     });
@@ -1651,6 +1673,21 @@ app.post('/api/review/:token/decision', async (req, res) => {
         return res.status(409).json({
           success: false,
           error: `You still have ${openCount} unresolved comment${openCount === 1 ? '' : 's'} on this proposal. Please resolve them or return the proposal for revision before approving.`,
+        });
+      }
+
+      // Block approval while this office has an open request (clarification /
+      // document) awaiting resolution. The office must mark it resolved first.
+      const openReqCount = (docData.additionalRequests || []).filter(
+        (r) =>
+          (r.stage || 'sas_review') === tokenData.stage &&
+          r.status !== 'resolved' &&
+          r.status !== 'cancelled'
+      ).length;
+      if (openReqCount > 0) {
+        return res.status(409).json({
+          success: false,
+          error: `You have ${openReqCount} open request${openReqCount === 1 ? '' : 's'} awaiting the submitter's response or your resolution. Resolve ${openReqCount === 1 ? 'it' : 'them'} or return the proposal before approving.`,
         });
       }
 
@@ -2127,6 +2164,89 @@ const requireActiveReviewContext = async (req, res) => {
   return { ...ctx, docData };
 };
 
+// Mint a fresh single-use review token for the proposal's currently-open stage,
+// invalidate the previous token, refresh the open stage entry, and return the
+// params needed to email the office a new review link. Used when a submitter
+// responds to a request and the office must be brought back to finish reviewing.
+const mintReviewTokenForStage = async ({ db, req, documentId, stage, createdBy }) => {
+  const FieldValue = admin.firestore.FieldValue;
+  const Timestamp = admin.firestore.Timestamp;
+  const officeId = STAGE_TO_OFFICE_ID[stage] || null;
+  if (!officeId) throw new Error('Stage is not a tokenized office stage');
+
+  const docRef = db.collection('documents').doc(documentId);
+  const docSnap = await docRef.get();
+  if (!docSnap.exists) throw new Error('Proposal not found');
+  const docData = docSnap.data();
+  if (docData.pipeline?.currentStage !== stage) throw new Error('Proposal is not at this stage');
+
+  const stages = Array.isArray(docData.pipeline?.stages) ? [...docData.pipeline.stages] : [];
+  let activeIdx = -1;
+  for (let i = stages.length - 1; i >= 0; i -= 1) {
+    if (stages[i]?.stage === stage && stages[i]?.completedAt == null) { activeIdx = i; break; }
+  }
+  if (activeIdx === -1) throw new Error('No open stage entry to notify');
+
+  const officeSnap = await db.collection('officeProfiles').doc(officeId).get();
+  const officeProfile = officeSnap.exists ? officeSnap.data() : null;
+
+  const oldTokenId = stages[activeIdx].token || null;
+  const now = Timestamp.now();
+  const newExpiresAt = Timestamp.fromMillis(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const newTokenRef = db.collection('reviewTokens').doc();
+  const newTokenId = newTokenRef.id;
+
+  stages[activeIdx] = {
+    ...stages[activeIdx],
+    token: newTokenId,
+    tokenSentAt: now,
+    tokenExpiresAt: newExpiresAt,
+    firstViewedAt: null,
+    firstViewedBy: null,
+    viewCount: 0,
+    regeneratedAt: now,
+    regeneratedBy: createdBy,
+    previousToken: oldTokenId,
+  };
+
+  const batch = db.batch();
+  if (oldTokenId) {
+    batch.set(
+      db.collection('reviewTokens').doc(oldTokenId),
+      { consumed: true, consumedAt: FieldValue.serverTimestamp(), action: 'superseded', supersededBy: newTokenId },
+      { merge: true }
+    );
+  }
+  batch.set(newTokenRef, {
+    tokenId: newTokenId,
+    documentId,
+    stage,
+    createdAt: FieldValue.serverTimestamp(),
+    createdBy,
+    expiresAt: newExpiresAt,
+    consumed: false,
+    consumedAt: null,
+    action: null,
+    remarks: null,
+    regeneratedFrom: oldTokenId || null,
+  });
+  batch.update(docRef, {
+    'pipeline.stages': stages,
+    lastUpdated: FieldValue.serverTimestamp(),
+    updatedBy: createdBy,
+  });
+  await batch.commit();
+
+  const reviewBaseUrl = getFrontendBaseUrl(req);
+  return {
+    newTokenId,
+    to: officeProfile?.email || null,
+    officeName: officeProfile?.name || defaultOfficeName(stage),
+    documentTitle: docData.title || 'Activity Proposal',
+    reviewUrl: `${reviewBaseUrl}/review?token=${newTokenId}`,
+  };
+};
+
 const commentScopeForStage = (stage) => STAGE_TO_OFFICE_ID[stage] || null;
 
 // Number of unresolved comments at the office's stage — drives the
@@ -2144,10 +2264,207 @@ app.get('/api/review/:token/comment-summary', async (req, res) => {
       .where('stage', '==', tokenData.stage)
       .get();
     const unresolved = snap.docs.filter((d) => d.data().resolved !== true).length;
-    res.json({ success: true, unresolvedReviewerTotal: unresolved });
+    // Open requests (clarification/document) raised by this stage also gate Approve.
+    const openRequestTotal = (ctx.docData?.additionalRequests || []).filter(
+      (r) =>
+        (r.stage || 'sas_review') === tokenData.stage &&
+        r.status !== 'resolved' &&
+        r.status !== 'cancelled'
+    ).length;
+    res.json({ success: true, unresolvedReviewerTotal: unresolved, openRequestTotal });
   } catch (error) {
     console.error('Error reading review comment summary:', error);
     res.status(500).json({ success: false, error: 'Failed to load comment summary', details: error.message });
+  }
+});
+
+// Tokenized Review: office raises a request (clarification / document / both)
+// for the submitter. Pauses the proposal in place at the current stage and
+// consumes the link (the office is brought back via a fresh link once the
+// submitter responds). Does NOT advance or return the pipeline.
+app.post('/api/review/:token/request', async (req, res) => {
+  try {
+    const ctx = await requireActiveReviewContext(req, res);
+    if (!ctx) return;
+    const { db, tokenData, docData } = ctx;
+    const { token } = req.params;
+    const { type, label, description } = req.body || {};
+
+    const reqType = ['clarification', 'document', 'both'].includes(type) ? type : 'document';
+    if (!label || !label.trim()) {
+      return res.status(400).json({ success: false, error: 'A short label/title for the request is required.' });
+    }
+
+    const FieldValue = admin.firestore.FieldValue;
+    const Timestamp = admin.firestore.Timestamp;
+    const officeLabel = stageOfficeLabel(tokenData.stage);
+    const verb = REQUEST_VERB[reqType];
+    const requestId = db.collection('documents').doc().id;
+    const entry = {
+      id: requestId,
+      label: label.trim(),
+      description: (description || '').trim(),
+      type: reqType,
+      stage: tokenData.stage,
+      status: 'pending',
+      requestedBy: `token:${token}`,
+      requestedByOffice: officeLabel,
+      requestedAt: Timestamp.now(),
+    };
+
+    const docRef = db.collection('documents').doc(tokenData.documentId);
+    const batch = db.batch();
+    batch.update(docRef, {
+      additionalRequests: [...(docData.additionalRequests || []), entry],
+      lastUpdated: FieldValue.serverTimestamp(),
+      updatedBy: `token:${token}`,
+    });
+    batch.update(db.collection('reviewTokens').doc(token), {
+      consumed: true,
+      consumedAt: FieldValue.serverTimestamp(),
+      action: 'requested',
+    });
+    batch.set(db.collection('documentStatusHistory').doc(), {
+      documentId: tokenData.documentId,
+      status: docData.status || 'pending',
+      previousStatus: docData.status || 'pending',
+      changedBy: `token:${token}`,
+      remarks: `${officeLabel} requested ${verb}: ${label.trim()}`,
+      timestamp: FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+
+    if (docData.organizationId) {
+      notifyOrganizationServer({
+        organizationId: docData.organizationId,
+        type: 'proposal_additional_request',
+        category: 'proposal_comments',
+        title: `${officeLabel} requested ${verb} on "${docData.title || 'your proposal'}"`,
+        message: `${officeLabel} is asking for ${verb} on your activity proposal:\n\n${label.trim()}${description && description.trim() ? `\n\n${description.trim()}` : ''}\n\nOpen the proposal in the SAS Portal to respond.`,
+        link: 'activity-proposals',
+        sourceCollection: 'documents',
+        sourceId: tokenData.documentId,
+        alsoEmail: true,
+      });
+    }
+
+    res.json({ success: true, requestId });
+  } catch (error) {
+    console.error('Error creating review request:', error);
+    res.status(500).json({ success: false, error: 'Failed to submit request', details: error.message });
+  }
+});
+
+// Tokenized Review: office marks one of its own requests resolved (on the fresh
+// link sent after the submitter responded). Unblocks Approve at this stage.
+app.post('/api/review/:token/request/:requestId/resolve', async (req, res) => {
+  try {
+    const ctx = await requireActiveReviewContext(req, res);
+    if (!ctx) return;
+    const { db, tokenData, docData } = ctx;
+    const { token, requestId } = req.params;
+    const FieldValue = admin.firestore.FieldValue;
+    const Timestamp = admin.firestore.Timestamp;
+
+    const requests = Array.isArray(docData.additionalRequests) ? [...docData.additionalRequests] : [];
+    const idx = requests.findIndex((r) => r.id === requestId);
+    if (idx === -1) return res.status(404).json({ success: false, error: 'Request not found' });
+    const current = requests[idx];
+    if ((current.stage || 'sas_review') !== tokenData.stage) {
+      return res.status(403).json({ success: false, error: 'This request belongs to a different stage.' });
+    }
+    if (current.status === 'resolved' || current.status === 'cancelled') {
+      return res.json({ success: true });
+    }
+
+    requests[idx] = { ...current, status: 'resolved', resolvedBy: `token:${token}`, resolvedAt: Timestamp.now() };
+    const docRef = db.collection('documents').doc(tokenData.documentId);
+    const batch = db.batch();
+    batch.update(docRef, { additionalRequests: requests, lastUpdated: FieldValue.serverTimestamp() });
+    batch.set(db.collection('documentStatusHistory').doc(), {
+      documentId: tokenData.documentId,
+      status: docData.status || 'pending',
+      previousStatus: docData.status || 'pending',
+      changedBy: `token:${token}`,
+      remarks: `${stageOfficeLabel(tokenData.stage)} resolved request: ${current.label}`,
+      timestamp: FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error resolving review request:', error);
+    res.status(500).json({ success: false, error: 'Failed to resolve request', details: error.message });
+  }
+});
+
+// Authenticated submitter: after writing their response to a request (file
+// and/or text via Firestore), call this so an office-stage request re-notifies
+// the office with a fresh review link. SAS/ISG-stage requests need no link.
+app.post('/api/review/respond', requireAuth, async (req, res) => {
+  try {
+    if (!adminInitialized) {
+      return res.status(503).json({ success: false, error: 'Review service unavailable.' });
+    }
+    const { documentId, requestId } = req.body || {};
+    if (!documentId || !requestId) {
+      return res.status(400).json({ success: false, error: 'documentId and requestId are required.' });
+    }
+
+    const db = admin.firestore();
+    const docSnap = await db.collection('documents').doc(documentId).get();
+    if (!docSnap.exists) return res.status(404).json({ success: false, error: 'Proposal not found.' });
+    const docData = docSnap.data();
+
+    const requests = Array.isArray(docData.additionalRequests) ? docData.additionalRequests : [];
+    const current = requests.find((r) => r.id === requestId);
+    if (!current) return res.status(404).json({ success: false, error: 'Request not found.' });
+
+    const stage = current.stage || 'sas_review';
+    const officeId = STAGE_TO_OFFICE_ID[stage] || null;
+    if (!officeId) {
+      // SAS/ISG-stage request — the portal-side reviewer sees it directly.
+      return res.json({ success: true, reNotified: false });
+    }
+    if (docData.pipeline?.currentStage !== stage) {
+      return res.status(409).json({ success: false, error: 'Proposal is no longer at this review stage.' });
+    }
+
+    const mail = await mintReviewTokenForStage({
+      db,
+      req,
+      documentId,
+      stage,
+      createdBy: `submitter:${req.authUser.uid}`,
+    });
+
+    await db.collection('documentStatusHistory').add({
+      documentId,
+      status: docData.status || 'pending',
+      previousStatus: docData.status || 'pending',
+      changedBy: `submitter:${req.authUser.uid}`,
+      remarks: `Response submitted to ${stageOfficeLabel(stage)} — review link re-sent`,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    let emailStatus = null;
+    if (!mail.to) {
+      emailStatus = 'no-office-email-configured';
+      console.warn(`[review/respond] No email configured for ${stage} — review link not re-sent.`);
+    } else {
+      try {
+        await transporter.sendMail(buildReviewLinkMail(mail));
+        emailStatus = 'sent';
+      } catch (mailErr) {
+        emailStatus = 'send-failed';
+        console.error('[review/respond] Failed to re-send review link:', mailErr);
+      }
+    }
+
+    res.json({ success: true, reNotified: true, emailStatus });
+  } catch (error) {
+    console.error('Error processing review response notify:', error);
+    res.status(500).json({ success: false, error: 'Failed to notify reviewer', details: error.message });
   }
 });
 
