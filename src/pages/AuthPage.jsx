@@ -4,7 +4,7 @@ import { auth, googleProvider } from "../config/firebase";
 import { getUserById, getUserByEmail } from "../services/userService";
 import { sendOTP, verifyOTP } from "../services/otpService";
 import { resetPasswordViaAPI } from "../services/emailService";
-import { logAuthEvent, checkAccountLockout } from "../services/authActivityLogService";
+import { logAuthEvent } from "../services/authActivityLogService";
 import { validatePasswordStrength } from "../utils/passwordValidation";
 import PrivacyPolicyContent from "../components/PrivacyPolicyContent";
 import "./PrivacyPolicyPage.css";
@@ -44,6 +44,7 @@ const AuthPage = () => {
     return "";
   });
   const [loading, setLoading] = useState(false);
+  const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
   
   const handleEmailLogin = async (e) => {
     e.preventDefault();
