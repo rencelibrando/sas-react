@@ -14,7 +14,7 @@ import Navbar from "../components/Navbar";
 import DashboardLayout from "../components/DashboardLayout";
 import LoadingScreen from "../components/LoadingScreen";
 import DocumentPreviewModal from "../components/documents/DocumentPreviewModal";
-import { formatDate, formatDateTime, getStatusBadgeClass, getStatusLabel } from "../utils/formatters";
+import { formatDate, formatDateTime, getProposalHistoryDisplay } from "../utils/formatters";
 import { REQUIREMENT_LABELS } from "../utils/proposalConstants";
 import "../styles/colors.css";
 import "./ISGEndorsementPage.css";
@@ -341,9 +341,14 @@ const ISGEndorsementPage = () => {
                                 <div className="history-item-dot"></div>
                                 <div className="history-item-content">
                                   <div className="history-item-header">
-                                    <span className={`status-badge ${getStatusBadgeClass(entry.status)}`}>
-                                      {getStatusLabel(entry.status)}
-                                    </span>
+                                    {(() => {
+                                      const hist = getProposalHistoryDisplay(entry);
+                                      return (
+                                        <span className={`status-badge ${hist.badgeClass}`}>
+                                          {hist.label}
+                                        </span>
+                                      );
+                                    })()}
                                     <span className="history-item-date">
                                       {formatDateTime(entry.timestamp)}
                                     </span>

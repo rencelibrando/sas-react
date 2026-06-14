@@ -174,4 +174,44 @@ export const getProposalDisplayStatus = (proposal) => {
   };
 };
 
+// A proposal's overall `status` stays "pending" for every intermediate pipeline
+// step, so a status-history entry's raw status badge reads "Pending" even after a
+// forward/approval. For those pending entries, derive a meaningful label from the
+// (code-controlled) remark text. Non-pending entries already carry a real status
+// and keep their normal label/colour.
+export const getProposalHistoryDisplay = (entry) => {
+  const status = entry?.status;
+  if (status && status !== "pending") {
+    return {
+      label: getStatusLabel(status),
+      badgeClass: getStatusBadgeClass(status)
+    };
+  }
+
+  const remarks = entry?.remarks || "";
+  // External approvals are recorded as "Approved at {stage}".
+  const approvedAt = remarks.match(/^Approved at (\w+)/i);
+  if (approvedAt) {
+    const office = STAGE_OFFICE[approvedAt[1].toLowerCase()];
+    return {
+      label: office ? `Approved by ${office}` : "Approved",
+      badgeClass: "status-badge-approved"
+    };
+  }
+  if (/forwarded to VPAA/i.test(remarks)) {
+    return { label: "Forwarded to VPAA", badgeClass: "status-badge-review" };
+  }
+  if (/forwarded to ISG/i.test(remarks)) {
+    return { label: "Released to ISG", badgeClass: "status-badge-review" };
+  }
+  if (/submitted/i.test(remarks)) {
+    return { label: "Submitted", badgeClass: "status-badge-pending" };
+  }
+  if (/forwarded to SAS/i.test(remarks)) {
+    return { label: "Forwarded to SAS", badgeClass: "status-badge-review" };
+  }
+  // Unknown intermediate step — avoid the misleading "Pending" wording.
+  return { label: "In Progress", badgeClass: "status-badge-pending" };
+};
+
 export const getStageOffice = (stageKey) => STAGE_OFFICE[stageKey] || null;

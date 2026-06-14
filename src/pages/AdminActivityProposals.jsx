@@ -31,9 +31,9 @@ import { subscribeToCommentSummary } from "../services/commentService";
 import {
   formatDate,
   formatDateTime,
-  getStatusBadgeClass,
   getStatusLabel,
   getProposalDisplayStatus,
+  getProposalHistoryDisplay,
 } from "../utils/formatters";
 import { REQUIREMENT_LABELS } from "../utils/proposalConstants";
 import "../styles/colors.css";
@@ -1333,11 +1333,17 @@ const AdminActivityProposals = () => {
                                   <div className="history-item-dot" />
                                   <div className="history-item-content">
                                     <div className="history-item-header">
-                                      <span
-                                        className={`status-badge ${getStatusBadgeClass(entry.status)}`}
-                                      >
-                                        {getStatusLabel(entry.status)}
-                                      </span>
+                                      {(() => {
+                                        const hist =
+                                          getProposalHistoryDisplay(entry);
+                                        return (
+                                          <span
+                                            className={`status-badge ${hist.badgeClass}`}
+                                          >
+                                            {hist.label}
+                                          </span>
+                                        );
+                                      })()}
                                       <span className="history-item-date">
                                         {formatDateTime(entry.timestamp)}
                                       </span>

@@ -14,7 +14,7 @@ import ProposalSubmission from "../components/proposals/ProposalSubmission";
 import LoadingScreen from "../components/LoadingScreen";
 import DocumentPreviewModal from "../components/documents/DocumentPreviewModal";
 import { subscribeToCommentSummary } from "../services/commentService";
-import { formatDate, formatDateTime, getStatusBadgeClass, getStatusLabel, getProposalDisplayStatus, getPipelineStageLabel, getStageOffice } from "../utils/formatters";
+import { formatDate, formatDateTime, getProposalDisplayStatus, getProposalHistoryDisplay, getPipelineStageLabel, getStageOffice } from "../utils/formatters";
 import { REQUIREMENT_LABELS } from "../utils/proposalConstants";
 import "../styles/colors.css";
 import "./ActivityProposalsPage.css";
@@ -686,9 +686,14 @@ const ActivityProposalsPage = ({ orgType: orgTypeProp = null }) => {
                                 <div className="history-item-dot"></div>
                                 <div className="history-item-content">
                                   <div className="history-item-header">
-                                    <span className={`status-badge ${getStatusBadgeClass(entry.status)}`}>
-                                      {getStatusLabel(entry.status)}
-                                    </span>
+                                    {(() => {
+                                      const hist = getProposalHistoryDisplay(entry);
+                                      return (
+                                        <span className={`status-badge ${hist.badgeClass}`}>
+                                          {hist.label}
+                                        </span>
+                                      );
+                                    })()}
                                     <span className="history-item-date">
                                       {formatDateTime(entry.timestamp)}
                                     </span>
