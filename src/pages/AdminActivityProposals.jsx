@@ -33,6 +33,7 @@ import {
   formatDateTime,
   getStatusBadgeClass,
   getStatusLabel,
+  getProposalDisplayStatus,
 } from "../utils/formatters";
 import { REQUIREMENT_LABELS } from "../utils/proposalConstants";
 import "../styles/colors.css";
@@ -1005,6 +1006,20 @@ const AdminActivityProposals = () => {
                     ) : (
                       <>
                         <div className="detail-info">
+                          <div className="info-row">
+                            <span className="info-label">Status:</span>
+                            {(() => {
+                              const display =
+                                getProposalDisplayStatus(selectedProposal);
+                              return (
+                                <span
+                                  className={`status-badge ${display.badgeClass}`}
+                                >
+                                  {display.label}
+                                </span>
+                              );
+                            })()}
+                          </div>
                           <div className="info-row">
                             <span className="info-label">Pipeline Stage:</span>
                             <span className="info-value">

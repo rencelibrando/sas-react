@@ -98,6 +98,25 @@ const findLastReturnedStage = (proposal) => {
   return null;
 };
 
+// Verb shown when a stage has been completed (passed on to the next office).
+// External approvals record action "approve"; SAS/ISG hand-offs record "forwarded".
+const COMPLETED_ACTION_VERB = {
+  approve: "Approved",
+  approved: "Approved",
+  forwarded: "Reviewed",
+  released: "Released",
+  distributed: "Distributed"
+};
+
+const findLastCompletedApproval = (proposal) => {
+  const stages = proposal?.pipeline?.stages || [];
+  for (let i = stages.length - 1; i >= 0; i--) {
+    const entry = stages[i];
+    if (entry?.completedAt && COMPLETED_ACTION_VERB[entry.action]) return entry;
+  }
+  return null;
+};
+
 export const getProposalDisplayStatus = (proposal) => {
   if (!proposal) return { label: "Pending", badgeClass: "status-badge-pending" };
 
@@ -122,12 +141,27 @@ export const getProposalDisplayStatus = (proposal) => {
   if (currentStage) {
     const activeEntry = getActiveStageEntry(proposal);
     const office = STAGE_OFFICE[currentStage];
+    // The office now holding the document has opened it.
     if (activeEntry?.firstViewedAt && office) {
       return {
         label: `Opened by ${office}`,
         badgeClass: "status-badge-review"
       };
     }
+    // Not opened yet at the current stage — surface the most recent approval so
+    // the badge reflects progress instead of falling back to a "pending" look
+    // once VPAA/OP/etc. have already signed off.
+    const lastApproval = findLastCompletedApproval(proposal);
+    if (lastApproval) {
+      const approvedOffice = STAGE_OFFICE[lastApproval.stage];
+      if (approvedOffice) {
+        return {
+          label: `${COMPLETED_ACTION_VERB[lastApproval.action]} by ${approvedOffice}`,
+          badgeClass: "status-badge-approved"
+        };
+      }
+    }
+    // Genuinely fresh — sitting at the first stage, not yet opened.
     return {
       label: getPipelineStageLabel(currentStage),
       badgeClass: "status-badge-pending"
