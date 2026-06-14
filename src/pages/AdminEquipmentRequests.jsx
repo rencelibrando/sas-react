@@ -32,7 +32,7 @@ import "./AdminEquipmentRequests.css";
 
 const TABS = [
   { id: "pending", label: "Pending", status: EQUIPMENT_REQUEST_STATUS.PENDING },
-  { id: "approved", label: "Approved (Awaiting Pickup)", status: EQUIPMENT_REQUEST_STATUS.APPROVED },
+  { id: "approved", label: "Approved (For Delivery)", status: EQUIPMENT_REQUEST_STATUS.APPROVED },
   { id: "released", label: "Released (In Use)", status: EQUIPMENT_REQUEST_STATUS.RELEASED },
   { id: "returned", label: "Returned", status: EQUIPMENT_REQUEST_STATUS.RETURNED },
   { id: "revision", label: "Returned for Revision", status: EQUIPMENT_REQUEST_STATUS.RETURNED_FOR_REVISION },

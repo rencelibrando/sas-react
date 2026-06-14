@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import { signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
 import { auth, googleProvider } from "../config/firebase";
 import { getUserById, getUserByEmail } from "../services/userService";
 import { sendOTP, verifyOTP } from "../services/otpService";
 import { resetPasswordViaAPI } from "../services/emailService";
-import { logAuthEvent, checkAccountLockout } from "../services/authActivityLogService";
+import { logAuthEvent } from "../services/authActivityLogService";
 import { validatePasswordStrength } from "../utils/passwordValidation";
 import PrivacyPolicyContent from "../components/PrivacyPolicyContent";
 import "./PrivacyPolicyPage.css";
@@ -18,12 +18,6 @@ const AuthPage = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  
-  // OTP verification state
-  const [showOTPVerification, setShowOTPVerification] = useState(false);
-  const [otpCode, setOtpCode] = useState("");
-  const [pendingAuth, setPendingAuth] = useState(null); // Store pending auth data
-  const isVerifyingRef = useRef(false); // Track if we're in the verification flow
   
   // Forgot password state
   const [showForgotPassword, setShowForgotPassword] = useState(false);
@@ -51,217 +45,96 @@ const AuthPage = () => {
   });
   const [loading, setLoading] = useState(false);
   const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
-
-  // Restore OTP verification state if component remounts during verification
-  useEffect(() => {
-    const savedPendingAuth = sessionStorage.getItem("pendingAuth");
-    const savedOTPEmail = sessionStorage.getItem("otpEmail");
-    
-    if (savedPendingAuth && savedOTPEmail) {
-      try {
-        const authData = JSON.parse(savedPendingAuth);
-        setPendingAuth(authData);
-        setShowOTPVerification(true);
-        isVerifyingRef.current = true;
-      } catch (err) {
-        console.error("Error restoring OTP state:", err);
-        sessionStorage.removeItem("pendingAuth");
-        sessionStorage.removeItem("otpEmail");
-      }
-    }
-  }, []);
-
+  
   const handleEmailLogin = async (e) => {
     e.preventDefault();
-    e.stopPropagation(); // Prevent event bubbling
-    
-    // Clear any previous error state and sessionStorage
+    e.stopPropagation();
+
     setError("");
     setLoading(true);
-    isVerifyingRef.current = true;
-    setPendingAuth(null);
-    sessionStorage.removeItem("pendingAuth");
-    sessionStorage.removeItem("otpEmail");
 
     try {
-      // Step 0: Account-lockout check. Server-side scan of authActivityLog
-      // counts login_failed events for this email in the last 15 minutes;
-      // if there are 5+ we refuse the attempt and tell the user when to retry.
-      const lockout = await checkAccountLockout(email);
-      if (lockout?.locked) {
-        const minutes = Math.max(1, Math.ceil((lockout.retryAfterMs || 0) / 60000));
-        const msg = `Too many failed login attempts. Please try again in about ${minutes} minute${minutes === 1 ? "" : "s"}.`;
-        logAuthEvent({
-          type: "login_blocked",
-          email,
-          success: false,
-          errorCode: `lockout(${lockout.failedCount}/${lockout.threshold})`,
-          context: "pre-signin-lockout",
-        });
-        isVerifyingRef.current = false;
-        setError(msg);
-        setLoading(false);
-        return;
-      }
+      const cred = await signInWithEmailAndPassword(auth, email, password);
+      
+      // Check if user exists in Firestore
+      const userDoc = await getUserById(cred.user.uid);
 
-      // Step 1: Validate email and password by attempting sign-in
-      // This will fail immediately if credentials are wrong
-      let credentialsValid = false;
-      try {
-        // Set sessionStorage BEFORE signing in, so App.jsx knows to stay on AuthPage
-        const authData = { type: "login", email, password };
-        sessionStorage.setItem("pendingAuth", JSON.stringify(authData));
-        sessionStorage.setItem("otpEmail", email);
-
-        await signInWithEmailAndPassword(auth, email, password);
-        // Sign-in succeeded - credentials are valid
-        // Sign out immediately (we'll sign in again after OTP verification)
+      if (!userDoc) {
         await signOut(auth);
-        // Small delay to ensure auth state updates before proceeding
-        await new Promise(resolve => setTimeout(resolve, 150));
-        credentialsValid = true;
-        
-        // Store pending auth in state
-        setPendingAuth(authData);
-      } catch (authError) {
-        // Reset all verification state on error
-        isVerifyingRef.current = false;
-        setPendingAuth(null);
-        sessionStorage.removeItem("pendingAuth");
-        sessionStorage.removeItem("otpEmail");
-        
-        // Log the full error for debugging
-        console.error("Firebase Auth Error:", authError);
-        console.error("Error Code:", authError.code);
-        console.error("Error Message:", authError.message);
-
         logAuthEvent({
           type: "login_failed",
           email,
+          userId: cred.user.uid,
           success: false,
-          errorCode: authError.code || null,
-          context: "credential-check",
+          errorCode: "no-firestore-user",
+          context: "email-password",
         });
-        
-        // Credentials are invalid - show error immediately (no OTP sent)
-        let errorMessage = "Invalid email or password. Please check your credentials and try again.";
-        
-        if (authError.code === "auth/invalid-credential" || authError.code === "auth/invalid-credential") {
-          errorMessage = "Invalid email or password. Please check your credentials and try again.";
-        } else if (authError.code === "auth/user-not-found") {
-          errorMessage = "No account found with this email. Please register first.";
-        } else if (authError.code === "auth/wrong-password") {
-          errorMessage = "Incorrect password. Please try again.";
-        } else if (authError.code === "auth/invalid-email") {
-          errorMessage = "Invalid email address. Please check and try again.";
-        } else if (authError.code === "auth/user-disabled") {
-          errorMessage = "This account has been disabled. Please contact support.";
-        } else if (authError.code === "auth/too-many-requests") {
-          errorMessage = "Too many failed login attempts. Please try again later.";
-        } else if (authError.code === "auth/network-request-failed") {
-          errorMessage = "Network error. Please check your internet connection and try again.";
-        } else if (authError.message) {
-          errorMessage = `Authentication error: ${authError.message}`;
-        }
-        
-        setError(errorMessage);
+        setError("No account found in the system. Please contact SAS office for organization account creation.");
         setLoading(false);
-        return; // Don't send OTP if credentials are wrong
-      }
-
-      // Step 2: Credentials are valid, send OTP
-      if (credentialsValid) {
-        try {
-          // sessionStorage already set before validation (in Step 1)
-          await sendOTP(email);
-          // Set state immediately
-          setShowOTPVerification(true);
-          setError("");
-          setLoading(false);
-        } catch (otpError) {
-          console.error("Error sending OTP:", otpError);
-          isVerifyingRef.current = false;
-          setPendingAuth(null);
-          sessionStorage.removeItem("pendingAuth");
-          sessionStorage.removeItem("otpEmail");
-          setError(otpError.message || "Failed to send OTP. Please try again.");
-          setLoading(false);
-        }
-      }
-    } catch (err) {
-      console.error("Login error:", err);
-      // Reset all state on any error
-      isVerifyingRef.current = false;
-      setPendingAuth(null);
-      sessionStorage.removeItem("pendingAuth");
-      sessionStorage.removeItem("otpEmail");
-      setError(err.message || "Failed to send OTP. Please try again.");
-      setLoading(false);
-    }
-  };
-
-  // Handler for OTP verification
-  const handleOTPVerification = async (e) => {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
-
-    try {
-      const isValid = await verifyOTP(pendingAuth.email, otpCode);
-      
-      if (!isValid) {
-        setError("Invalid OTP code. Please try again.");
         return;
       }
 
-      // OTP verified, proceed with authentication
-      if (pendingAuth.type === "login") {
-        try {
-          const cred = await signInWithEmailAndPassword(auth, pendingAuth.email, pendingAuth.password);
-          logAuthEvent({
-            type: "login_success",
-            email: pendingAuth.email,
-            userId: cred?.user?.uid || null,
-            success: true,
-            context: "email-password",
-          });
-          // Success - reset OTP state
-          isVerifyingRef.current = false;
-          sessionStorage.removeItem("pendingAuth");
-          sessionStorage.removeItem("otpEmail");
-          setShowOTPVerification(false);
-          setOtpCode("");
-          setPendingAuth(null);
-        } catch (authError) {
-          // Handle sign-in errors after OTP verification
-          let errorMessage = "Authentication failed. Please try logging in again.";
-          
-          if (authError.code === "auth/invalid-credential" || authError.code === "auth/invalid-credential") {
-            errorMessage = "Invalid email or password. Please check your credentials and try again.";
-          } else if (authError.code === "auth/user-not-found") {
-            errorMessage = "No account found with this email. Please register first.";
-          } else if (authError.code === "auth/wrong-password") {
-            errorMessage = "Incorrect password. Please try again.";
-          } else if (authError.message) {
-            errorMessage = authError.message;
-          }
+      const isAdmin = userDoc.role === "Admin";
+      const hasOrgId = userDoc.organizationId && userDoc.organizationId.trim() !== "";
+      const hasRole = userDoc.role && userDoc.role.trim() !== "";
+      const hasUserRole = userDoc.userRole && userDoc.userRole.trim() !== "";
 
-          logAuthEvent({
-            type: "login_failed",
-            email: pendingAuth.email,
-            success: false,
-            errorCode: authError.code || null,
-            context: "post-otp",
-          });
-
-          setError(errorMessage);
-          setLoading(false);
-          return;
-        }
+      if (!isAdmin && (!hasOrgId || !hasRole || !hasUserRole)) {
+        await signOut(auth);
+        logAuthEvent({
+          type: "login_failed",
+          email,
+          userId: cred.user.uid,
+          success: false,
+          errorCode: "missing-org-info",
+          context: "email-password",
+        });
+        setError("Your account is missing organization data. Please contact SAS office.");
+        setLoading(false);
+        return;
       }
+
+      logAuthEvent({
+        type: "login_success",
+        email,
+        userId: cred.user.uid,
+        success: true,
+        context: "email-password",
+      });
     } catch (err) {
-      console.error("OTP verification error:", err);
-      setError(err.message || "Failed to verify OTP. Please try again.");
+      console.error("Firebase Auth Error:", err);
+      console.error("Error Code:", err.code);
+      console.error("Error Message:", err.message);
+
+      logAuthEvent({
+        type: "login_failed",
+        email,
+        success: false,
+        errorCode: err.code || null,
+        context: "email-password",
+      });
+
+      let errorMessage = "Invalid email or password. Please check your credentials and try again.";
+
+      if (err.code === "auth/invalid-credential") {
+        errorMessage = "Invalid email or password. Please check your credentials and try again.";
+      } else if (err.code === "auth/user-not-found") {
+        errorMessage = "No account found with this email. Please register first.";
+      } else if (err.code === "auth/wrong-password") {
+        errorMessage = "Incorrect password. Please try again.";
+      } else if (err.code === "auth/invalid-email") {
+        errorMessage = "Invalid email address. Please check and try again.";
+      } else if (err.code === "auth/user-disabled") {
+        errorMessage = "This account has been disabled. Please contact support.";
+      } else if (err.code === "auth/too-many-requests") {
+        errorMessage = "Too many failed login attempts. Please try again later.";
+      } else if (err.code === "auth/network-request-failed") {
+        errorMessage = "Network error. Please check your internet connection and try again.";
+      } else if (err.message) {
+        errorMessage = `Authentication error: ${err.message}`;
+      }
+
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -290,6 +163,26 @@ const AuthPage = () => {
           context: "google",
         });
         setError("No account found. Please contact SAS office for organization account creation.");
+        setLoading(false);
+        return;
+      }
+
+      const isAdmin = userDoc.role === "Admin";
+      const hasOrgId = userDoc.organizationId && userDoc.organizationId.trim() !== "";
+      const hasRole = userDoc.role && userDoc.role.trim() !== "";
+      const hasUserRole = userDoc.userRole && userDoc.userRole.trim() !== "";
+
+      if (!isAdmin && (!hasOrgId || !hasRole || !hasUserRole)) {
+        await signOut(auth);
+        logAuthEvent({
+          type: "google_login_failed",
+          email: user?.email || null,
+          userId: user?.uid || null,
+          success: false,
+          errorCode: "missing-org-info",
+          context: "google",
+        });
+        setError("Your account is missing organization data. Please contact SAS office.");
         setLoading(false);
         return;
       }
@@ -582,62 +475,6 @@ const AuthPage = () => {
         </div>
       </div>
 
-      {/* OTP Verification Modal */}
-      {showOTPVerification && (
-        <div className="otp-modal-overlay">
-          <div className="otp-modal">
-            <h2 className="otp-modal-title">Verify Your Email</h2>
-            <p className="otp-modal-subtitle">
-              We've sent a 6-digit OTP code to <strong>{pendingAuth?.email}</strong>
-            </p>
-            <form onSubmit={handleOTPVerification} className="auth-form">
-              <div className="form-group">
-                <label htmlFor="otpCode" className="form-label">Enter OTP Code</label>
-                <input
-                  id="otpCode"
-                  type="text"
-                  className="form-input"
-                  placeholder="000000"
-                  value={otpCode}
-                  onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                  required
-                  maxLength={6}
-                  disabled={loading}
-                  style={{ textAlign: "center", fontSize: "1.5rem", letterSpacing: "0.5rem" }}
-                />
-              </div>
-
-              {error && <div className="error-message">{error}</div>}
-
-              <button
-                type="submit"
-                className="auth-button"
-                disabled={loading || otpCode.length !== 6}
-              >
-                {loading ? "Verifying..." : "Verify OTP"}
-              </button>
-
-              <button
-                type="button"
-                className="switch-link"
-                onClick={() => {
-                  isVerifyingRef.current = false;
-                  sessionStorage.removeItem("pendingAuth");
-                  sessionStorage.removeItem("otpEmail");
-                  setShowOTPVerification(false);
-                  setOtpCode("");
-                  setPendingAuth(null);
-                  setError("");
-                }}
-                style={{ marginTop: "1rem" }}
-              >
-                Cancel
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
-
       {/* Forgot Password Modal */}
       {showForgotPassword && (
         <div className="otp-modal-overlay">
@@ -899,4 +736,3 @@ const AuthPage = () => {
 };
 
 export default AuthPage;
-

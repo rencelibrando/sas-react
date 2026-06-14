@@ -45,7 +45,7 @@ const Navbar = () => {
         <div className="navbar-logo-container">
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <img src={sasLogo} alt="SAS Logo" className="navbar-logo-img" />
-            <div className="navbar-logo">SAS</div>
+            <div className="navbar-logo">ORGANIZATION</div>
           </div>
           <div className="navbar-app-name">Student Affairs and Services</div>
         </div>

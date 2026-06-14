@@ -6,7 +6,9 @@ import { REQUIREMENT_LABELS } from "../utils/proposalConstants";
 import "../styles/colors.css";
 import "./ReviewPage.css";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
+const API_BASE_URL = import.meta.env.DEV 
+  ? (import.meta.env.VITE_API_BASE_URL || "http://localhost:3001") 
+  : (import.meta.env.VITE_API_BASE_URL || "");
 
 const STAGE_TITLES = {
   vpaa_review: "VPAA Review",
