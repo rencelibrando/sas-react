@@ -1,6 +1,11 @@
 import { auth } from "../config/firebase";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
+// In dev, fall back to the local Express port. In production, fall back to
+// same-origin ("") rather than localhost so a missing VITE_API_BASE_URL can
+// never point the deployed app at a developer's machine.
+const API_BASE_URL = import.meta.env.DEV
+  ? (import.meta.env.VITE_API_BASE_URL || "http://localhost:3001")
+  : (import.meta.env.VITE_API_BASE_URL || "");
 
 const getAuthHeader = async () => {
   const user = auth.currentUser;
