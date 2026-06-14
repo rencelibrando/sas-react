@@ -50,7 +50,11 @@ const getRequestOrigin = (req) => {
   return null;
 };
 const getFrontendBaseUrl = (req) => {
-  if (corsOrigins.length > 0) return corsOrigins[0];
+  if (corsOrigins.length > 0) {
+    const origin = getRequestOrigin(req);
+    if (origin && corsOrigins.includes(origin)) return origin;
+    return corsOrigins[0];
+  }
   if (isDev) return getRequestOrigin(req) || 'http://localhost:5173';
   throw new Error('FRONTEND_BASE_URL is required in production');
 };
@@ -428,6 +432,39 @@ const defaultOfficeName = (stage) => {
     default: return 'Office';
   }
 };
+
+function normalizeOfficeDocIds(officeId) {
+  if (!officeId) return [];
+  const ids = [officeId];
+  const lower = officeId.toLowerCase();
+  const upper = officeId.toUpperCase();
+  if (!ids.includes(lower)) ids.push(lower);
+  if (!ids.includes(upper)) ids.push(upper);
+  return ids;
+}
+
+async function getOfficeProfileForStage(db, officeId) {
+  if (!officeId) return null;
+  for (const candidateId of normalizeOfficeDocIds(officeId)) {
+    const snap = await db.collection('officeProfiles').doc(candidateId).get();
+    if (snap.exists) {
+      return { officeId: candidateId, ...snap.data() };
+    }
+  }
+  return null;
+}
+
+function getOfficeProfileEmail(officeProfile) {
+  return officeProfile?.email || officeProfile?.contactEmail || officeProfile?.officeEmail || null;
+}
+
+function getOfficeProfileName(officeProfile, stage) {
+  return officeProfile?.name || officeProfile?.officeName || defaultOfficeName(stage);
+}
+
+function getOfficeProfileRole(officeProfile, stage) {
+  return officeProfile?.role || officeProfile?.abbreviation || stageOfficeLabel(stage);
+}
 
 const buildReviewLinkMail = ({ to, documentTitle, reviewUrl, officeName }) => ({
   from: 'sas.webapp.portal@gmail.com',
@@ -1239,8 +1276,7 @@ app.post('/api/review/:token/decision', async (req, res) => {
 
       const nextOfficeId = nextStage ? STAGE_TO_OFFICE_ID[nextStage] : null;
       if (nextOfficeId) {
-        const nextOfficeSnap = await db.collection('officeProfiles').doc(nextOfficeId).get();
-        const nextOffice = nextOfficeSnap.exists ? nextOfficeSnap.data() : null;
+        const nextOffice = await getOfficeProfileForStage(db, nextOfficeId);
 
         const nextTokenRef = db.collection('reviewTokens').doc();
         const nextTokenId = nextTokenRef.id;
@@ -1274,8 +1310,8 @@ app.post('/api/review/:token/decision', async (req, res) => {
 
         nextForward = {
           stage: nextStage,
-          to: nextOffice?.email || null,
-          officeName: nextOffice?.name || defaultOfficeName(nextStage),
+          to: getOfficeProfileEmail(nextOffice),
+          officeName: getOfficeProfileName(nextOffice, nextStage),
           documentTitle: docData.title || 'Activity Proposal',
           reviewUrl: `${reviewBaseUrl}/review?token=${nextTokenId}`,
         };
@@ -1812,9 +1848,9 @@ app.post('/api/admin/regenerate-review-token', requireAdmin, async (req, res) =>
     }
     const oldTokenId = stages[activeIdx].token || null;
 
-    const officeSnap = await db.collection('officeProfiles').doc(officeId).get();
-    const officeProfile = officeSnap.exists ? officeSnap.data() : null;
-    if (!officeProfile?.email) {
+    const officeProfile = await getOfficeProfileForStage(db, officeId);
+    const officeEmail = getOfficeProfileEmail(officeProfile);
+    if (!officeEmail) {
       return res.status(400).json({
         success: false,
         error: `Office profile for ${officeId.toUpperCase()} is missing an email. Set it in Office Profiles before regenerating.`,
@@ -1878,21 +1914,17 @@ app.post('/api/admin/regenerate-review-token', requireAdmin, async (req, res) =>
     });
     await batch.commit();
 
-    const reviewBaseUrl =
-      process.env.FRONTEND_BASE_URL ||
-      req.headers.origin ||
-      (req.headers.referer ? new URL(req.headers.referer).origin : null) ||
-      'http://localhost:5173';
+    const reviewBaseUrl = getFrontendBaseUrl(req);
 
     let emailStatus = 'sent';
     try {
       await transporter.sendMail(buildReviewLinkMail({
-        to: officeProfile.email,
+        to: officeEmail,
         documentTitle: docData.title || 'Activity Proposal',
         reviewUrl: `${reviewBaseUrl}/review?token=${newTokenId}`,
-        officeName: officeProfile.name || defaultOfficeName(stage),
+        officeName: getOfficeProfileName(officeProfile, stage),
       }));
-      console.log(`[regenerate] new review link sent to ${officeProfile.email} for ${stage}`);
+      console.log(`[regenerate] new review link sent to ${officeEmail} for ${stage}`);
     } catch (mailErr) {
       emailStatus = 'send-failed';
       console.error('[regenerate] Failed to send review link email:', mailErr);
@@ -1904,10 +1936,10 @@ app.post('/api/admin/regenerate-review-token', requireAdmin, async (req, res) =>
       targetCollection: 'documents',
       targetId: documentId,
       targetLabel: docData.title || documentId,
-      remarks: `Stage ${stage}; sent to ${officeProfile.email}; email ${emailStatus}`,
+      remarks: `Stage ${stage}; sent to ${officeEmail}; email ${emailStatus}`,
     });
 
-    res.json({ success: true, newTokenId, expiresAt: newExpiresAt.toMillis(), emailStatus, sentTo: officeProfile.email });
+    res.json({ success: true, newTokenId, expiresAt: newExpiresAt.toMillis(), emailStatus, sentTo: officeEmail });
   } catch (error) {
     console.error('Error regenerating review token:', error);
     res.status(500).json({ success: false, error: 'Failed to regenerate review token.', details: error.message });
