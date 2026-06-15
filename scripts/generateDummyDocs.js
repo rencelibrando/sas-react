@@ -119,6 +119,24 @@ function drawWrapped(page, text, font, size, y, maxW = CONTENT_W, x = MARGIN, co
   return y;
 }
 
+// Count how many lines drawWrapped will produce — used for page-break math
+function wrappedLineCount(text, font, size, maxW = CONTENT_W) {
+  const words = text.split(" ");
+  let line = "";
+  let lines = 0;
+  for (const word of words) {
+    const test = line ? `${line} ${word}` : word;
+    if (font.widthOfTextAtSize(test, size) > maxW && line) {
+      lines++;
+      line = word;
+    } else {
+      line = test;
+    }
+  }
+  if (line) lines++;
+  return lines;
+}
+
 // Justified text — last line of each call is left-aligned (paragraph break)
 function drawJustified(page, text, font, size, y, maxW = CONTENT_W, x = MARGIN, color = BLACK, leading = 6) {
   const words = text.split(" ");
@@ -602,15 +620,38 @@ async function doc06_speakerProfile() {
     ]],
   ];
 
+  // Lowest y content may occupy before we must break to a new page
+  // (footer sits at y=30; keep a comfortable gap above it).
+  const BOTTOM_LIMIT = 60;
+  const LINE_H = 10 + 6; // size + leading used by drawWrapped below
+
   for (const [heading, items] of sections) {
+    // Keep the heading with its first item — don't orphan a heading at page bottom.
+    const firstItemLines = items.length ? wrappedLineCount(items[0], regular, 10, CONTENT_W - 12) : 0;
+    const headingBlock = 14 + firstItemLines * LINE_H; // heading (10+4) + first item
+    if (y - headingBlock < BOTTOM_LIMIT) {
+      footerNote(page, fonts);
+      ({ page, y } = await newPage(pdfDoc, fonts));
+    }
     y = drawLeft(page, heading, bold, 10, y);
     for (const item of items) {
+      const itemH = wrappedLineCount(item, regular, 10, CONTENT_W - 12) * LINE_H;
+      if (y - itemH < BOTTOM_LIMIT) {
+        footerNote(page, fonts);
+        ({ page, y } = await newPage(pdfDoc, fonts));
+      }
       y = drawWrapped(page, item, regular, 10, y, CONTENT_W - 12, MARGIN + 12);
     }
     y -= 6;
   }
 
   y -= 8;
+  // Keep the whole signature block together on one page.
+  const signatureBlockH = 8 + 6 + 14 + 36 + 13;
+  if (y - signatureBlockH < BOTTOM_LIMIT) {
+    footerNote(page, fonts);
+    ({ page, y } = await newPage(pdfDoc, fonts));
+  }
   y = drawHRule(page, y, 1, MAROON);
   y -= 6;
   y = drawLeft(page, "Confirmed by:", bold, 10, y);

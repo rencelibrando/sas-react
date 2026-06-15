@@ -1,7 +1,6 @@
 import { initializeApp } from "firebase/app";
 import {
   getAuth,
-  GoogleAuthProvider,
   setPersistence,
   browserLocalPersistence,
 } from "firebase/auth";
@@ -28,6 +27,5 @@ setPersistence(auth, browserLocalPersistence).catch((err) => {
   console.warn("Firebase setPersistence failed:", err?.message || err);
 });
 
-export const googleProvider = new GoogleAuthProvider();
 export const db = getFirestore(app);
 export const storage = getStorage(app);

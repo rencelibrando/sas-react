@@ -134,6 +134,7 @@ const ReviewPage = () => {
   const sigFileInputRef = useRef(null);
   const [unresolvedReviewerTotal, setUnresolvedReviewerTotal] = useState(0);
   const [openRequestTotal, setOpenRequestTotal] = useState(0);
+  const [commentsByRequirement, setCommentsByRequirement] = useState({});
   const [summaryReady, setSummaryReady] = useState(false);
 
   // Poll the office's open-comment count so the Approve gate stays in sync
@@ -147,6 +148,7 @@ const ReviewPage = () => {
       if (r.ok && data.success) {
         setUnresolvedReviewerTotal(data.unresolvedReviewerTotal || 0);
         setOpenRequestTotal(data.openRequestTotal || 0);
+        setCommentsByRequirement(data.byRequirement || {});
         setSummaryReady(true);
         return;
       }
@@ -471,22 +473,42 @@ const ReviewPage = () => {
                 <section className="review-section">
                   <h3 className="review-section-title">Documents</h3>
                   <ul className="review-files-list">
-                    {review.files.map((f, i) => (
-                      <li key={i}>
-                        <button
-                          type="button"
-                          className="review-file-link"
-                          onClick={() => setPreviewFile({
-                            fileUrl: f.fileUrl,
-                            fileName: f.fileName,
-                            title: REQUIREMENT_LABELS[f.requirementKey] || f.fileName,
-                            requirementKey: f.requirementKey,
-                          })}
-                        >
-                          {REQUIREMENT_LABELS[f.requirementKey] || f.fileName}
-                        </button>
-                      </li>
-                    ))}
+                    {review.files.map((f, i) => {
+                      const counts = commentsByRequirement[f.requirementKey] || {};
+                      const unresolved = counts.unresolved || 0;
+                      const total = counts.total || 0;
+                      return (
+                        <li key={i}>
+                          <button
+                            type="button"
+                            className="review-file-link"
+                            onClick={() => setPreviewFile({
+                              fileUrl: f.fileUrl,
+                              fileName: f.fileName,
+                              title: REQUIREMENT_LABELS[f.requirementKey] || f.fileName,
+                              requirementKey: f.requirementKey,
+                            })}
+                          >
+                            {REQUIREMENT_LABELS[f.requirementKey] || f.fileName}
+                          </button>
+                          {unresolved > 0 ? (
+                            <span
+                              className="review-file-comment-badge is-unresolved"
+                              title={`${unresolved} unresolved comment${unresolved === 1 ? "" : "s"} on this document`}
+                            >
+                              ⚠ {unresolved} open
+                            </span>
+                          ) : total > 0 ? (
+                            <span
+                              className="review-file-comment-badge is-resolved"
+                              title={`${total} comment${total === 1 ? "" : "s"}, all resolved`}
+                            >
+                              ✓ {total}
+                            </span>
+                          ) : null}
+                        </li>
+                      );
+                    })}
                   </ul>
                 </section>
               )}

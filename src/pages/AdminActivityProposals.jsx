@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { auth } from "../config/firebase";
 import { getUserById } from "../services/userService";
 import {
@@ -28,6 +28,7 @@ import { apiJson } from "../services/apiClient";
 import AdminLayout from "../components/admin/AdminLayout";
 import LoadingScreen from "../components/LoadingScreen";
 import DocumentPreviewModal from "../components/documents/DocumentPreviewModal";
+import AdditionalRequestsPanel from "../components/documents/AdditionalRequestsPanel";
 import { subscribeToCommentSummary } from "../services/commentService";
 import {
   formatDate,
@@ -36,7 +37,7 @@ import {
   getProposalDisplayStatus,
   getProposalHistoryDisplay,
 } from "../utils/formatters";
-import { REQUIREMENT_LABELS, getRequestFiles } from "../utils/proposalConstants";
+import { REQUIREMENT_LABELS } from "../utils/proposalConstants";
 import "../styles/colors.css";
 import "./AdminActivityProposals.css";
 
@@ -65,186 +66,18 @@ const STAGE_TABS = [
 const getStageLabel = (stage) =>
   STAGE_LABELS[stage] || (stage ? stage.replace(/_/g, " ") : "—");
 
-const REQUEST_STATUS_LABEL = {
-  pending: "Awaiting response",
-  uploaded: "Response received — needs review",
-  responded: "Response received — needs review",
-  resolved: "Resolved",
-  cancelled: "Cancelled",
-};
-
-const AdditionalRequestsPanel = ({
-  requests,
-  showAddForm,
-  setShowAddForm,
-  newLabel,
-  setNewLabel,
-  newDescription,
-  setNewDescription,
-  creating,
-  error,
-  busyId,
-  onCreate,
-  onResolve,
-  onReopen,
-  onCancel,
-  onPreview,
-}) => {
-  const sorted = [...requests].sort((a, b) => {
-    const order = { pending: 0, responded: 1, uploaded: 1, resolved: 2, cancelled: 3 };
-    return (order[a.status] ?? 9) - (order[b.status] ?? 9);
-  });
-
-  return (
-    <div className="additional-requests-section">
-      <div className="additional-requests-header">
-        <h4 className="actions-section-title">Additional Document Requests</h4>
-        {!showAddForm && (
-          <button
-            type="button"
-            className="form-button form-button-secondary"
-            onClick={() => setShowAddForm(true)}
-          >
-            + Request Additional Document
-          </button>
-        )}
-      </div>
-
-      {showAddForm && (
-        <div className="additional-request-form">
-          <div className="form-group">
-            <label className="form-label">Document name *</label>
-            <input
-              type="text"
-              className="filter-input"
-              placeholder="e.g. Venue MOA, Parental Consent Forms"
-              value={newLabel}
-              onChange={(e) => setNewLabel(e.target.value)}
-              disabled={creating}
-              maxLength={120}
-            />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Description / instructions</label>
-            <textarea
-              className="filter-input"
-              rows={3}
-              placeholder="Explain what the organization needs to provide and why."
-              value={newDescription}
-              onChange={(e) => setNewDescription(e.target.value)}
-              disabled={creating}
-              maxLength={1000}
-            />
-          </div>
-          {error && <p className="form-error">{error}</p>}
-          <div className="modal-actions">
-            <button
-              type="button"
-              className="form-button form-button-secondary"
-              onClick={() => {
-                setShowAddForm(false);
-                setNewLabel("");
-                setNewDescription("");
-              }}
-              disabled={creating}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="form-button form-button-primary"
-              onClick={onCreate}
-              disabled={creating || !newLabel.trim()}
-            >
-              {creating ? "Sending..." : "Send Request"}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {sorted.length === 0 ? (
-        <p className="additional-requests-empty">
-          No additional documents have been requested for this proposal.
-        </p>
-      ) : (
-        <ul className="additional-requests-list">
-          {sorted.map((req) => {
-            const isOpen =
-              req.status === "pending" ||
-              req.status === "uploaded" ||
-              req.status === "responded";
-            const busy = busyId === req.id;
-            return (
-              <li
-                key={req.id}
-                className={`additional-request-item status-${req.status}`}
-              >
-                <div className="additional-request-main">
-                  <div className="additional-request-label">{req.label}</div>
-                  {req.description && (
-                    <p className="additional-request-desc">{req.description}</p>
-                  )}
-                  <div className="additional-request-status">
-                    <span className={`request-status-pill status-${req.status}`}>
-                      {REQUEST_STATUS_LABEL[req.status] || req.status}
-                    </span>
-                  </div>
-                  {req.responseText && (
-                    <p className="additional-request-reply">
-                      <strong>Reply:</strong> {req.responseText}
-                    </p>
-                  )}
-                  {getRequestFiles(req).map((f, i) => (
-                    <div key={i} className="additional-request-file">
-                      <button
-                        type="button"
-                        className="file-download-link file-preview-btn"
-                        onClick={() => onPreview(req, f, i)}
-                      >
-                        📄 {f.fileName}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-                <div className="additional-request-actions">
-                  {isOpen && (
-                    <button
-                      type="button"
-                      className="form-button form-button-primary"
-                      onClick={() => onResolve(req.id)}
-                      disabled={busy}
-                    >
-                      {busy ? "..." : "Mark Resolved"}
-                    </button>
-                  )}
-                  {req.status === "resolved" && (
-                    <button
-                      type="button"
-                      className="form-button form-button-secondary"
-                      onClick={() => onReopen(req.id)}
-                      disabled={busy}
-                    >
-                      {busy ? "..." : "Reopen"}
-                    </button>
-                  )}
-                  {isOpen && (
-                    <button
-                      type="button"
-                      className="form-button form-button-secondary"
-                      onClick={() => onCancel(req.id)}
-                      disabled={busy}
-                    >
-                      Cancel
-                    </button>
-                  )}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </div>
-  );
+// Whether a proposal belongs in a given status tab. Shared by the table filter
+// and the per-tab count badges so they can't drift apart.
+const matchesTab = (p, tab) => {
+  if (tab === "all") return true;
+  if (tab === "completed") {
+    return p.status === "approved" && !p.pipeline?.currentStage;
+  }
+  if (tab === "rejected") {
+    // Both reviewer rejections and legacy SAS "returned" land here.
+    return p.status === "rejected" || p.status === "returned";
+  }
+  return p.pipeline?.currentStage === tab;
 };
 
 const AdminActivityProposals = () => {
@@ -403,66 +236,68 @@ const AdminActivityProposals = () => {
     }
   };
 
-  const applyFilters = () => {
-    let filtered = [...enrichedProposals];
-
-    if (activeTab !== "all") {
-      if (activeTab === "completed") {
-        filtered = filtered.filter(
-          (p) => p.status === "approved" && !p.pipeline?.currentStage
-        );
-      } else if (activeTab === "rejected") {
-        // Both reviewer rejections and legacy SAS "returned" land here.
-        filtered = filtered.filter(
-          (p) => p.status === "rejected" || p.status === "returned"
-        );
-      } else {
-        filtered = filtered.filter(
-          (p) => p.pipeline?.currentStage === activeTab
-        );
-      }
-    }
-
+  // All filters except the status-tab filter. Reused for both the visible table
+  // and the per-tab count badges, so a tab's badge reflects what's actually in it
+  // given the current search / org / date filters.
+  const passesNonTabFilters = (p) => {
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
-      filtered = filtered.filter(
-        (p) =>
-          (p.title || "").toLowerCase().includes(q) ||
-          (p.submitterName || "").toLowerCase().includes(q)
-      );
+      if (
+        !(p.title || "").toLowerCase().includes(q) &&
+        !(p.submitterName || "").toLowerCase().includes(q)
+      ) {
+        return false;
+      }
     }
-
-    if (orgTypeFilter !== "all") {
-      filtered = filtered.filter((p) => p.organizationType === orgTypeFilter);
+    if (orgTypeFilter !== "all" && p.organizationType !== orgTypeFilter) {
+      return false;
     }
-
-    if (orgNameFilter !== "all") {
-      filtered = filtered.filter((p) => p.organizationId === orgNameFilter);
+    if (orgNameFilter !== "all" && p.organizationId !== orgNameFilter) {
+      return false;
     }
-
     if (dateFrom) {
       const from = new Date(dateFrom);
       from.setHours(0, 0, 0, 0);
-      filtered = filtered.filter((p) => {
-        const d = p.dateSubmitted?.toDate
-          ? p.dateSubmitted.toDate()
-          : new Date(p.dateSubmitted);
-        return d >= from;
-      });
+      const d = p.dateSubmitted?.toDate
+        ? p.dateSubmitted.toDate()
+        : new Date(p.dateSubmitted);
+      if (!(d >= from)) return false;
     }
-
     if (dateTo) {
       const to = new Date(dateTo);
       to.setHours(23, 59, 59, 999);
-      filtered = filtered.filter((p) => {
-        const d = p.dateSubmitted?.toDate
-          ? p.dateSubmitted.toDate()
-          : new Date(p.dateSubmitted);
-        return d <= to;
-      });
+      const d = p.dateSubmitted?.toDate
+        ? p.dateSubmitted.toDate()
+        : new Date(p.dateSubmitted);
+      if (!(d <= to)) return false;
     }
+    return true;
+  };
 
-    setFilteredProposals(filtered);
+  // Count of proposals in each tab under the current non-tab filters.
+  const tabCounts = useMemo(() => {
+    const counts = {};
+    const pool = enrichedProposals.filter(passesNonTabFilters);
+    for (const tab of STAGE_TABS) {
+      counts[tab.id] = pool.filter((p) => matchesTab(p, tab.id)).length;
+    }
+    return counts;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    enrichedProposals,
+    searchQuery,
+    orgTypeFilter,
+    orgNameFilter,
+    dateFrom,
+    dateTo,
+  ]);
+
+  const applyFilters = () => {
+    setFilteredProposals(
+      enrichedProposals.filter(
+        (p) => matchesTab(p, activeTab) && passesNonTabFilters(p)
+      )
+    );
   };
 
   const enrichProposalsWithDetails = async (proposals) =>
@@ -931,15 +766,19 @@ const AdminActivityProposals = () => {
 
           {/* Pipeline Stage Tabs */}
           <div className="status-tabs">
-            {STAGE_TABS.map((tab) => (
-              <button
-                key={tab.id}
-                className={`status-tab ${activeTab === tab.id ? "active" : ""}`}
-                onClick={() => setActiveTab(tab.id)}
-              >
-                {tab.label}
-              </button>
-            ))}
+            {STAGE_TABS.map((tab) => {
+              const count = tabCounts[tab.id] || 0;
+              return (
+                <button
+                  key={tab.id}
+                  className={`status-tab ${activeTab === tab.id ? "active" : ""}`}
+                  onClick={() => setActiveTab(tab.id)}
+                >
+                  {tab.label}
+                  {count > 0 && <span className="status-tab-count">{count}</span>}
+                </button>
+              );
+            })}
           </div>
 
           {error && (
@@ -1144,7 +983,7 @@ const AdminActivityProposals = () => {
                                           setPreviewFile({
                                             fileUrl: f.fileUrl,
                                             fileName: f.fileName,
-                                            title: REQUIREMENT_LABELS[f.requirementKey] || f.fileName,
+                                            title: REQUIREMENT_LABELS[f.requirementKey] || f.additionalRequestLabel || f.fileName,
                                             documentId: selectedProposal.documentId,
                                             requirementKey: f.requirementKey,
                                             fileVersion: f.version || 1,
@@ -1154,6 +993,7 @@ const AdminActivityProposals = () => {
                                       >
                                         📄{" "}
                                         {REQUIREMENT_LABELS[f.requirementKey] ||
+                                          f.additionalRequestLabel ||
                                           f.fileName}
                                       </button>
                                       {counts && counts.total > 0 && (

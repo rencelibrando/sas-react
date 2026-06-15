@@ -20,7 +20,7 @@ import helmet from 'helmet';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import admin from 'firebase-admin';
 import dotenv from 'dotenv';
-import multer from 'multer';
+import Busboy from 'busboy';
 import { randomUUID } from 'crypto';
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
@@ -188,11 +188,74 @@ const requireAdmin = async (req, res, next) => {
   }
 };
 
-// Multer in-memory uploader for signature images (max 2MB)
-const signatureUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 2 * 1024 * 1024 },
-});
+// ── Signature upload (multipart) parsing ─────────────────────────────────────
+// Firebase Cloud Functions pre-reads the request body into `req.rawBody`, so
+// multer's streaming parser sees an already-ended stream and throws
+// "Unexpected end of form". Parse the single `signature` file field from the
+// raw body with busboy instead. Falls back to buffering the request stream when
+// rawBody is absent (plain Express / local dev). Sets `req.file` = { buffer,
+// originalname, mimetype, size } on success.
+const MAX_SIGNATURE_BYTES = 2 * 1024 * 1024;
+
+const readRawBody = (req) =>
+  new Promise((resolve, reject) => {
+    if (req.rawBody) return resolve(req.rawBody);
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+
+const parseSignatureUpload = (req, res, next) => {
+  const contentType = req.headers['content-type'] || '';
+  if (!contentType.includes('multipart/form-data')) {
+    return res.status(400).json({ success: false, error: 'Expected multipart/form-data upload.' });
+  }
+
+  let bb;
+  try {
+    bb = Busboy({ headers: req.headers, limits: { fileSize: MAX_SIGNATURE_BYTES, files: 1 } });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: `Malformed upload: ${err.message}` });
+  }
+
+  const chunks = [];
+  let fileInfo = null;
+  let tooLarge = false;
+  let settled = false;
+  const fail = (status, error) => {
+    if (settled) return;
+    settled = true;
+    res.status(status).json({ success: false, error });
+  };
+
+  bb.on('file', (name, stream, info) => {
+    if (name !== 'signature') {
+      stream.resume();
+      return;
+    }
+    fileInfo = { originalname: info.filename || 'signature', mimetype: info.mimeType };
+    stream.on('data', (d) => chunks.push(d));
+    stream.on('limit', () => {
+      tooLarge = true;
+    });
+  });
+  bb.on('error', () => fail(500, 'Failed to read uploaded file.'));
+  bb.on('close', () => {
+    if (settled) return;
+    if (tooLarge) return fail(400, 'Signature image must be 2MB or smaller.');
+    if (fileInfo) {
+      const buffer = Buffer.concat(chunks);
+      req.file = { ...fileInfo, buffer, size: buffer.length };
+    }
+    settled = true;
+    next();
+  });
+
+  readRawBody(req)
+    .then((raw) => bb.end(raw))
+    .catch(() => fail(500, 'Failed to read uploaded file.'));
+};
 
 // ── Admin audit log helper (server-side) ───────────────────────────────────
 // Writes an adminActivityLog entry via the Admin SDK. Best-effort: failures
@@ -628,7 +691,7 @@ app.post('/api/send-credentials', requireAdmin, credentialsLimiter, async (req, 
               <div class="credentials-box">
                 <p><span class="label">Login Email:</span> ${email}</p>
                 <p><span class="label">Temporary Password:</span> <strong>${password}</strong></p>
-                <p><span class="label">Login URL:</span> <a href="https://sas-portal.web.app">https://sas-portal.web.app</a></p>
+                <p><span class="label">Login URL:</span> <a href="https://sas-react-app.web.app">https://sas-react-app.web.app</a></p>
               </div>
               
               <div class="warning">
@@ -1545,7 +1608,7 @@ app.get('/api/review/:token/signature-status', async (req, res) => {
 
 // Upload (or replace) the signature image for the office that owns this review token.
 // Multer middleware reads `signature` field as a single file (max 2MB).
-app.post('/api/review/:token/signature', signatureUpload.single('signature'), async (req, res) => {
+app.post('/api/review/:token/signature', parseSignatureUpload, async (req, res) => {
   try {
     const ctx = await validateReviewTokenForRequest(req, res);
     if (!ctx) return;
@@ -2268,6 +2331,16 @@ app.get('/api/review/:token/comment-summary', async (req, res) => {
       .where('stage', '==', tokenData.stage)
       .get();
     const unresolved = snap.docs.filter((d) => d.data().resolved !== true).length;
+    // Per-file breakdown so the review page can flag exactly which document has
+    // open comments. Keyed by requirementKey: { total, unresolved }.
+    const byRequirement = {};
+    snap.docs.forEach((d) => {
+      const c = d.data() || {};
+      const key = c.requirementKey || '__unknown__';
+      if (!byRequirement[key]) byRequirement[key] = { total: 0, unresolved: 0 };
+      byRequirement[key].total += 1;
+      if (c.resolved !== true) byRequirement[key].unresolved += 1;
+    });
     // Open requests (clarification/document) raised by this stage also gate Approve.
     const openRequestTotal = (ctx.docData?.additionalRequests || []).filter(
       (r) =>
@@ -2275,7 +2348,7 @@ app.get('/api/review/:token/comment-summary', async (req, res) => {
         r.status !== 'resolved' &&
         r.status !== 'cancelled'
     ).length;
-    res.json({ success: true, unresolvedReviewerTotal: unresolved, openRequestTotal });
+    res.json({ success: true, unresolvedReviewerTotal: unresolved, openRequestTotal, byRequirement });
   } catch (error) {
     console.error('Error reading review comment summary:', error);
     res.status(500).json({ success: false, error: 'Failed to load comment summary', details: error.message });

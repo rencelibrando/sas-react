@@ -1,0 +1,255 @@
+/*
+ * Styles for the shared AdditionalRequestsPanel (used by SAS review and ISG
+ * assessment). Generic helper classes (form-button, filter-input, etc.) are
+ * scoped under .additional-requests-section so the panel renders consistently on
+ * any page without depending on — or leaking into — that page's global styles.
+ */
+
+.additional-requests-section {
+  margin: 1.5rem 0;
+  padding: 1.25rem;
+  background: #fff;
+  border: 1px solid var(--earist-cream-dark);
+  border-radius: 8px;
+}
+
+.additional-requests-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.additional-requests-section .actions-section-title {
+  color: var(--earist-maroon);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.additional-request-form {
+  background: var(--earist-cream-light);
+  border: 1px solid var(--earist-cream-dark);
+  border-radius: 6px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.additional-request-form .form-group {
+  margin-bottom: 0.85rem;
+}
+
+.additional-request-form .form-label {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-weight: 600;
+  color: var(--gray-dark);
+  font-size: 0.9rem;
+}
+
+.additional-requests-section .filter-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.75rem;
+  border: 1px solid var(--earist-cream-dark);
+  border-radius: 6px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  color: var(--gray-dark);
+  background: var(--white);
+  transition: all 0.3s ease;
+}
+
+.additional-requests-section .filter-input:focus {
+  outline: none;
+  border-color: var(--earist-maroon);
+  box-shadow: 0 0 0 3px rgba(128, 0, 0, 0.1);
+}
+
+.additional-requests-section .form-error {
+  color: #c62828;
+  font-size: 0.88rem;
+  margin: 0.25rem 0 0.5rem;
+}
+
+.additional-requests-section .modal-actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+  margin-top: 0.5rem;
+}
+
+.additional-requests-section .form-button {
+  padding: 0.6rem 1.25rem;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.additional-requests-section .form-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.additional-requests-section .form-button-primary {
+  background: var(--earist-maroon);
+  color: var(--white);
+}
+
+.additional-requests-section .form-button-primary:hover:not(:disabled) {
+  background: var(--earist-maroon-dark);
+}
+
+.additional-requests-section .form-button-secondary {
+  background: var(--earist-cream-light);
+  color: var(--earist-maroon);
+  border: 1px solid var(--earist-cream-dark);
+}
+
+.additional-requests-section .form-button-secondary:hover:not(:disabled) {
+  background: var(--earist-cream-dark);
+}
+
+.additional-requests-empty {
+  color: #888;
+  font-style: italic;
+  margin: 0.5rem 0 0;
+}
+
+.additional-requests-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.additional-request-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1rem;
+  border-left: 4px solid var(--earist-maroon);
+  background: var(--earist-cream-light);
+  border-radius: 4px;
+}
+
+.additional-request-item.status-resolved {
+  border-left-color: #2e7d32;
+  opacity: 0.85;
+}
+
+.additional-request-item.status-cancelled {
+  border-left-color: #999;
+  opacity: 0.7;
+}
+
+.additional-request-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.additional-request-label {
+  font-weight: 600;
+  color: var(--earist-maroon);
+  margin-bottom: 0.25rem;
+}
+
+.additional-request-desc {
+  margin: 0 0 0.5rem;
+  color: #444;
+  white-space: pre-wrap;
+  font-size: 0.92rem;
+}
+
+.additional-request-status {
+  margin-bottom: 0.5rem;
+}
+
+.additional-request-reply {
+  margin: 0 0 0.5rem;
+  color: #444;
+  font-size: 0.92rem;
+  white-space: pre-wrap;
+}
+
+.request-status-pill {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  background: #fff;
+  border: 1px solid var(--earist-cream-dark);
+  color: #555;
+}
+
+.request-status-pill.status-pending {
+  background: #fff8e1;
+  border-color: #f0c419;
+  color: #8a6d00;
+}
+
+.request-status-pill.status-uploaded,
+.request-status-pill.status-responded {
+  background: #e3f2fd;
+  border-color: #64b5f6;
+  color: #0d47a1;
+}
+
+.request-status-pill.status-resolved {
+  background: #e8f5e9;
+  border-color: #66bb6a;
+  color: #1b5e20;
+}
+
+.request-status-pill.status-cancelled {
+  background: #f5f5f5;
+  border-color: #bdbdbd;
+  color: #555;
+}
+
+.additional-request-file {
+  margin-top: 0.25rem;
+}
+
+.additional-requests-section .file-download-link {
+  color: var(--earist-maroon);
+  text-decoration: none;
+  font-weight: 500;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.additional-requests-section .file-download-link:hover {
+  text-decoration: underline;
+}
+
+.additional-request-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 140px;
+}
+
+@media (max-width: 640px) {
+  .additional-request-item {
+    flex-direction: column;
+  }
+  .additional-request-actions {
+    flex-direction: row;
+    width: 100%;
+    min-width: 0;
+  }
+}

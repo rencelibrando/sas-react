@@ -7,13 +7,20 @@ import {
   returnProposalFromISG,
   getDocumentStatusHistory,
   markProposalFileViewed,
+  getDocumentById,
+  createAdditionalRequest,
+  resolveAdditionalRequest,
+  reopenAdditionalRequest,
+  cancelAdditionalRequest,
 } from "../services/documentService";
 import { getUserById } from "../services/userService";
+import { sendAdditionalDocRequestEmail } from "../services/emailService";
 import { subscribeToCommentSummary } from "../services/commentService";
 import Navbar from "../components/Navbar";
 import DashboardLayout from "../components/DashboardLayout";
 import LoadingScreen from "../components/LoadingScreen";
 import DocumentPreviewModal from "../components/documents/DocumentPreviewModal";
+import AdditionalRequestsPanel from "../components/documents/AdditionalRequestsPanel";
 import { formatDate, formatDateTime, getProposalHistoryDisplay } from "../utils/formatters";
 import { REQUIREMENT_LABELS } from "../utils/proposalConstants";
 import "../styles/colors.css";
@@ -42,6 +49,22 @@ const ISGEndorsementPage = () => {
   const [returnRemarks, setReturnRemarks] = useState("");
   const [returnLoading, setReturnLoading] = useState(false);
   const [returnError, setReturnError] = useState("");
+
+  // Additional document requests (ISG raises these during assessment)
+  const [showAddRequestForm, setShowAddRequestForm] = useState(false);
+  const [newRequestLabel, setNewRequestLabel] = useState("");
+  const [newRequestDescription, setNewRequestDescription] = useState("");
+  const [creatingRequest, setCreatingRequest] = useState(false);
+  const [requestError, setRequestError] = useState("");
+  const [requestBusyId, setRequestBusyId] = useState(null);
+
+  const additionalRequests = selectedProposal?.additionalRequests || [];
+  const openAdditionalRequestCount = additionalRequests.filter(
+    (r) =>
+      r.status === "pending" ||
+      r.status === "uploaded" ||
+      r.status === "responded"
+  ).length;
 
   const loadProposals = async () => {
     const docs = await getProposalsAtStage("isg_endorsement");
@@ -103,6 +126,11 @@ const ISGEndorsementPage = () => {
     setForwardError("");
     setReturnRemarks("");
     setReturnError("");
+    setShowAddRequestForm(false);
+    setNewRequestLabel("");
+    setNewRequestDescription("");
+    setRequestError("");
+    setRequestBusyId(null);
   };
 
   const handleForward = async () => {
@@ -142,6 +170,127 @@ const ISGEndorsementPage = () => {
       setReturnError(err.message || "Failed to return proposal.");
     } finally {
       setReturnLoading(false);
+    }
+  };
+
+  // Re-fetch the selected proposal so additional-request state updates locally
+  // without reloading the whole queue. Keeps enrichment fields (org name etc.).
+  const refreshSelectedProposal = async () => {
+    if (!selectedProposal?.documentId) return;
+    try {
+      const fresh = await getDocumentById(selectedProposal.documentId);
+      if (fresh) setSelectedProposal((prev) => (prev ? { ...prev, ...fresh } : prev));
+    } catch (err) {
+      console.error("Failed to refresh proposal:", err);
+    }
+  };
+
+  const handleCreateAdditionalRequest = async () => {
+    if (!selectedProposal) return;
+    const label = newRequestLabel.trim();
+    if (!label) {
+      setRequestError("Document name is required.");
+      return;
+    }
+    setCreatingRequest(true);
+    setRequestError("");
+    try {
+      await createAdditionalRequest({
+        documentId: selectedProposal.documentId,
+        label,
+        description: newRequestDescription.trim(),
+        adminId: auth.currentUser.uid,
+        requestedByOffice: "ISG",
+      });
+
+      // Best-effort email notification. Failure here must not undo the request.
+      try {
+        const submitter = selectedProposal.submittedBy
+          ? await getUserById(selectedProposal.submittedBy)
+          : null;
+        if (submitter?.email) {
+          await sendAdditionalDocRequestEmail({
+            to: submitter.email,
+            recipientName: submitter.fullName || "",
+            documentTitle: selectedProposal.title,
+            requestLabel: label,
+            requestDescription: newRequestDescription.trim(),
+            portalUrl: window.location.origin,
+          });
+        }
+      } catch (emailErr) {
+        console.error("Failed to send notification email:", emailErr);
+      }
+
+      setNewRequestLabel("");
+      setNewRequestDescription("");
+      setShowAddRequestForm(false);
+      await refreshSelectedProposal();
+    } catch (err) {
+      setRequestError(err.message || "Failed to create request.");
+    } finally {
+      setCreatingRequest(false);
+    }
+  };
+
+  const handleResolveRequest = async (requestId) => {
+    if (!selectedProposal) return;
+    setRequestBusyId(requestId);
+    setRequestError("");
+    try {
+      await resolveAdditionalRequest({
+        documentId: selectedProposal.documentId,
+        requestId,
+        adminId: auth.currentUser.uid,
+      });
+      await refreshSelectedProposal();
+    } catch (err) {
+      setRequestError(err.message || "Failed to resolve request.");
+    } finally {
+      setRequestBusyId(null);
+    }
+  };
+
+  const handleReopenRequest = async (requestId) => {
+    if (!selectedProposal) return;
+    setRequestBusyId(requestId);
+    setRequestError("");
+    try {
+      await reopenAdditionalRequest({
+        documentId: selectedProposal.documentId,
+        requestId,
+        adminId: auth.currentUser.uid,
+      });
+      await refreshSelectedProposal();
+    } catch (err) {
+      setRequestError(err.message || "Failed to reopen request.");
+    } finally {
+      setRequestBusyId(null);
+    }
+  };
+
+  const handleCancelRequest = async (requestId) => {
+    if (!selectedProposal) return;
+    if (
+      !window.confirm(
+        "Cancel this additional document request? It will be removed from the open list."
+      )
+    ) {
+      return;
+    }
+    setRequestBusyId(requestId);
+    setRequestError("");
+    try {
+      await cancelAdditionalRequest({
+        documentId: selectedProposal.documentId,
+        requestId,
+        adminId: auth.currentUser.uid,
+      });
+      await refreshSelectedProposal();
+    } catch (err) {
+      setRequestError(err.message || "Failed to cancel request.");
+    } finally {
+      setRequestBusyId(null);
     }
   };
 
@@ -276,7 +425,7 @@ const ISGEndorsementPage = () => {
                                         setPreviewFile({
                                           fileUrl: f.fileUrl,
                                           fileName: f.fileName,
-                                          title: REQUIREMENT_LABELS[f.requirementKey] || f.fileName,
+                                          title: REQUIREMENT_LABELS[f.requirementKey] || f.additionalRequestLabel || f.fileName,
                                           documentId: selectedProposal.documentId,
                                           requirementKey: f.requirementKey,
                                           fileVersion: f.version || 1,
@@ -284,7 +433,7 @@ const ISGEndorsementPage = () => {
                                         });
                                       }}
                                     >
-                                      📄 {REQUIREMENT_LABELS[f.requirementKey] || f.fileName}
+                                      📄 {REQUIREMENT_LABELS[f.requirementKey] || f.additionalRequestLabel || f.fileName}
                                     </button>
                                     {counts && counts.total > 0 && (
                                       <div className="file-comment-counts">
@@ -308,10 +457,42 @@ const ISGEndorsementPage = () => {
                         )}
                       </div>
 
+                      <AdditionalRequestsPanel
+                        requests={additionalRequests}
+                        showAddForm={showAddRequestForm}
+                        setShowAddForm={setShowAddRequestForm}
+                        newLabel={newRequestLabel}
+                        setNewLabel={setNewRequestLabel}
+                        newDescription={newRequestDescription}
+                        setNewDescription={setNewRequestDescription}
+                        creating={creatingRequest}
+                        error={requestError}
+                        busyId={requestBusyId}
+                        onCreate={handleCreateAdditionalRequest}
+                        onResolve={handleResolveRequest}
+                        onReopen={handleReopenRequest}
+                        onCancel={handleCancelRequest}
+                        onPreview={(req, f, i) =>
+                          setPreviewFile({
+                            fileUrl: f.fileUrl,
+                            fileName: f.fileName,
+                            title: req.label,
+                            documentId: selectedProposal.documentId,
+                            requirementKey: `additional:${req.id}:${i}`,
+                          })
+                        }
+                      />
+
                       {unresolvedReviewerCount > 0 && (
                         <div className="comment-gate-banner">
                           ⚠ {unresolvedReviewerCount} unresolved reviewer comment{unresolvedReviewerCount === 1 ? "" : "s"}.
                           The proposal can't be forwarded until they're resolved.
+                        </div>
+                      )}
+                      {openAdditionalRequestCount > 0 && (
+                        <div className="comment-gate-banner">
+                          ⚠ {openAdditionalRequestCount} open additional document request{openAdditionalRequestCount === 1 ? "" : "s"}.
+                          Mark each as Resolved before forwarding.
                         </div>
                       )}
 
@@ -319,8 +500,14 @@ const ISGEndorsementPage = () => {
                         <button
                           className="btn-endorse"
                           onClick={() => setShowForwardModal(true)}
-                          disabled={unresolvedReviewerCount > 0}
-                          title={unresolvedReviewerCount > 0 ? "Resolve all reviewer comments first" : ""}
+                          disabled={unresolvedReviewerCount > 0 || openAdditionalRequestCount > 0}
+                          title={
+                            unresolvedReviewerCount > 0
+                              ? "Resolve all reviewer comments first"
+                              : openAdditionalRequestCount > 0
+                              ? "Resolve all additional document requests first"
+                              : ""
+                          }
                         >
                           Forward to SAS
                         </button>

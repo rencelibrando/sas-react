@@ -1064,6 +1064,12 @@ export const endorseProposal = async (documentId, userId, remarks = "") => {
   if (data.pipeline?.currentStage !== "isg_endorsement") {
     throw new Error("Proposal is not at the ISG endorsement stage");
   }
+  const openRequests = (data.additionalRequests || []).filter(isOpenAdditionalRequest);
+  if (openRequests.length > 0) {
+    throw new Error(
+      `Cannot forward — ${openRequests.length} additional document request(s) still open. Mark each as Resolved before forwarding.`
+    );
+  }
 
   const completedAt = Timestamp.fromDate(new Date());
   const newStage = {
@@ -1927,6 +1933,33 @@ export const REQUEST_TYPE_VERB = {
   both: "a revision and clarification",
 };
 
+// Review stages whose reviewer may manage (resolve / reopen / cancel) additional
+// document requests inline. SAS reviews and ISG assesses; both can raise requests.
+const REQUEST_MANAGE_STAGES = ["sas_review", "isg_endorsement"];
+
+// Normalize a request's attachments (legacy singular `file`, or `files[]`) into
+// `files[]`-shaped entries for the main proposal documents collection. Each entry
+// reuses the `additional:<requestId>:<index>` requirement key so comment threads
+// stay aligned with what the reviewer saw in the requests panel.
+const additionalFilesForProposal = (req) => {
+  const files = Array.isArray(req.files)
+    ? req.files
+    : req.file
+    ? [req.file]
+    : [];
+  return files.map((f, i) => ({
+    fileUrl: f.fileUrl,
+    fileName: f.fileName,
+    fileSize: f.fileSize ?? null,
+    requirementKey: `additional:${req.id}:${i}`,
+    additionalRequestId: req.id,
+    additionalRequestLabel: req.label,
+    source: "additional",
+    uploadedAt: f.uploadedAt ?? null,
+    uploadedBy: f.uploadedBy ?? null,
+  }));
+};
+
 /**
  * Reviewer (SAS admin via portal, or an office via the tokenized backend) creates
  * a new request on a proposal. Pauses the proposal in place at its current stage —
@@ -2207,8 +2240,8 @@ export const resolveAdditionalRequest = async ({
   const snap = await getDoc(docRef);
   if (!snap.exists()) throw new Error("Proposal not found");
   const data = snap.data();
-  if (data.pipeline?.currentStage !== "sas_review") {
-    throw new Error("Requests can only be resolved during SAS review");
+  if (!REQUEST_MANAGE_STAGES.includes(data.pipeline?.currentStage)) {
+    throw new Error("Requests can only be resolved during an active review stage");
   }
 
   const requests = Array.isArray(data.additionalRequests)
@@ -2228,9 +2261,22 @@ export const resolveAdditionalRequest = async ({
     resolveNote: note?.trim() || "",
   };
 
+  // Promote any submitted files into the proposal's main documents collection so
+  // every downstream reviewer (VPAA, OP, etc.) can see them — not just the office
+  // that requested them. De-dupe by requirementKey in case of resolve→reopen→resolve.
+  const existingFiles = Array.isArray(data.files) ? [...data.files] : [];
+  const existingKeys = new Set(existingFiles.map((f) => f.requirementKey));
+  const newFiles = additionalFilesForProposal(current).filter(
+    (f) => !existingKeys.has(f.requirementKey)
+  );
+  const updatedFiles = newFiles.length
+    ? [...existingFiles, ...newFiles]
+    : existingFiles;
+
   const batch = writeBatch(db);
   batch.update(docRef, {
     additionalRequests: requests,
+    files: updatedFiles,
     lastUpdated: serverTimestamp(),
     updatedBy: adminId,
   });
@@ -2267,8 +2313,8 @@ export const reopenAdditionalRequest = async ({
   const snap = await getDoc(docRef);
   if (!snap.exists()) throw new Error("Proposal not found");
   const data = snap.data();
-  if (data.pipeline?.currentStage !== "sas_review") {
-    throw new Error("Requests can only be reopened during SAS review");
+  if (!REQUEST_MANAGE_STAGES.includes(data.pipeline?.currentStage)) {
+    throw new Error("Requests can only be reopened during an active review stage");
   }
 
   const requests = Array.isArray(data.additionalRequests)
@@ -2325,8 +2371,8 @@ export const cancelAdditionalRequest = async ({
   const snap = await getDoc(docRef);
   if (!snap.exists()) throw new Error("Proposal not found");
   const data = snap.data();
-  if (data.pipeline?.currentStage !== "sas_review") {
-    throw new Error("Requests can only be cancelled during SAS review");
+  if (!REQUEST_MANAGE_STAGES.includes(data.pipeline?.currentStage)) {
+    throw new Error("Requests can only be cancelled during an active review stage");
   }
 
   const requests = Array.isArray(data.additionalRequests)

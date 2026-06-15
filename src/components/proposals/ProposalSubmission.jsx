@@ -338,6 +338,11 @@ const ProposalSubmission = ({ onSuccess, onCancel, organizationId, orgType }) =>
                     <span className="requirement-label">
                       {REQUIREMENT_LABELS[key]}
                     </span>
+                    {key === "activity_form" && (
+                      <span className="requirement-notice">
+                        Must be signed by the adviser and college dean.
+                      </span>
+                    )}
                     {isConditional && (
                       <span className="badge-conditional">conditional</span>
                     )}

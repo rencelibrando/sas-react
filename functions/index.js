@@ -8,7 +8,7 @@ import nodemailer from 'nodemailer';
 import cors from 'cors';
 import admin from 'firebase-admin';
 import dotenv from 'dotenv';
-import multer from 'multer';
+import Busboy from 'busboy';
 import { randomUUID } from 'crypto';
 import { stampSignature } from './server/pdfStamper.js';
 
@@ -77,11 +77,74 @@ app.use(
 );
 app.use(express.json());
 
-// Multer in-memory uploader for signature images (max 2MB)
-const signatureUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 2 * 1024 * 1024 },
-});
+// ── Signature upload (multipart) parsing ─────────────────────────────────────
+// Firebase Cloud Functions pre-reads the request body into `req.rawBody`, so
+// multer's streaming parser sees an already-ended stream and throws
+// "Unexpected end of form". Parse the single `signature` file field from the
+// raw body with busboy instead. Falls back to buffering the request stream when
+// rawBody is absent (plain Express / local dev). Sets `req.file` = { buffer,
+// originalname, mimetype, size } on success.
+const MAX_SIGNATURE_BYTES = 2 * 1024 * 1024;
+
+const readRawBody = (req) =>
+  new Promise((resolve, reject) => {
+    if (req.rawBody) return resolve(req.rawBody);
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+
+const parseSignatureUpload = (req, res, next) => {
+  const contentType = req.headers['content-type'] || '';
+  if (!contentType.includes('multipart/form-data')) {
+    return res.status(400).json({ success: false, error: 'Expected multipart/form-data upload.' });
+  }
+
+  let bb;
+  try {
+    bb = Busboy({ headers: req.headers, limits: { fileSize: MAX_SIGNATURE_BYTES, files: 1 } });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: `Malformed upload: ${err.message}` });
+  }
+
+  const chunks = [];
+  let fileInfo = null;
+  let tooLarge = false;
+  let settled = false;
+  const fail = (status, error) => {
+    if (settled) return;
+    settled = true;
+    res.status(status).json({ success: false, error });
+  };
+
+  bb.on('file', (name, stream, info) => {
+    if (name !== 'signature') {
+      stream.resume();
+      return;
+    }
+    fileInfo = { originalname: info.filename || 'signature', mimetype: info.mimeType };
+    stream.on('data', (d) => chunks.push(d));
+    stream.on('limit', () => {
+      tooLarge = true;
+    });
+  });
+  bb.on('error', () => fail(500, 'Failed to read uploaded file.'));
+  bb.on('close', () => {
+    if (settled) return;
+    if (tooLarge) return fail(400, 'Signature image must be 2MB or smaller.');
+    if (fileInfo) {
+      const buffer = Buffer.concat(chunks);
+      req.file = { ...fileInfo, buffer, size: buffer.length };
+    }
+    settled = true;
+    next();
+  });
+
+  readRawBody(req)
+    .then((raw) => bb.end(raw))
+    .catch(() => fail(500, 'Failed to read uploaded file.'));
+};
 
 // ── Storage helpers (used by review-decision stamping flow) ──────────────────
 
@@ -217,34 +280,48 @@ app.post('/api/send-otp', async (req, res) => {
 // Password Reset Endpoint (requires Firebase Admin SDK)
 app.post('/api/reset-password', async (req, res) => {
   try {
-    const { email, newPassword, otpVerified } = req.body;
+    const { email, newPassword, otp } = req.body;
 
-    if (!email || !newPassword) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Email and new password are required' 
-      });
-    }
-
-    if (!otpVerified) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'OTP verification is required' 
+    if (!email || !newPassword || !otp) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email, OTP, and new password are required',
       });
     }
 
     if (newPassword.length < 8) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Password must be at least 8 characters long' 
+      return res.status(400).json({
+        success: false,
+        error: 'Password must be at least 8 characters long',
       });
     }
 
     if (!adminInitialized) {
-      return res.status(503).json({ 
-        success: false, 
-        error: 'Password reset service is not available. Please check backend configuration.' 
+      return res.status(503).json({
+        success: false,
+        error: 'Password reset service is not available. Please check backend configuration.',
       });
+    }
+
+    // Server-side OTP validation
+    const db = admin.firestore();
+    const otpRef = db.collection('otps').doc(email);
+    const otpSnap = await otpRef.get();
+    if (!otpSnap.exists) {
+      return res.status(400).json({ success: false, error: 'No OTP on file. Request a new code.' });
+    }
+    const otpData = otpSnap.data();
+    const expiresAt = otpData.expiresAt?.toDate
+      ? otpData.expiresAt.toDate()
+      : otpData.expiresAt
+        ? new Date(otpData.expiresAt)
+        : null;
+    if (expiresAt && expiresAt < new Date()) {
+      await otpRef.delete().catch(() => {});
+      return res.status(400).json({ success: false, error: 'OTP has expired. Request a new code.' });
+    }
+    if (otpData.otp !== otp) {
+      return res.status(400).json({ success: false, error: 'Invalid OTP.' });
     }
 
     let userRecord;
@@ -252,30 +329,26 @@ app.post('/api/reset-password', async (req, res) => {
       userRecord = await admin.auth().getUserByEmail(email);
     } catch (error) {
       if (error.code === 'auth/user-not-found') {
-        return res.status(404).json({ 
-          success: false, 
-          error: 'User not found' 
-        });
+        return res.status(404).json({ success: false, error: 'User not found' });
       }
       throw error;
     }
 
-    await admin.auth().updateUser(userRecord.uid, {
-      password: newPassword
-    });
+    await admin.auth().updateUser(userRecord.uid, { password: newPassword });
+    await otpRef.delete().catch(() => {});
 
     console.log(`Password reset successfully for ${email}`);
-    
-    res.json({ 
-      success: true, 
-      message: 'Password reset successfully' 
+
+    res.json({
+      success: true,
+      message: 'Password reset successfully',
     });
   } catch (error) {
     console.error('Error resetting password:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       error: 'Failed to reset password',
-      details: error.message 
+      details: error.message,
     });
   }
 });
@@ -364,7 +437,7 @@ app.post('/api/send-credentials', async (req, res) => {
               <div class="credentials-box">
                 <p><span class="label">Login Email:</span> ${email}</p>
                 <p><span class="label">Temporary Password:</span> <strong>${password}</strong></p>
-                <p><span class="label">Login URL:</span> <a href="https://sas-portal.web.app">https://sas-portal.web.app</a></p>
+                <p><span class="label">Login URL:</span> <a href="https://sas-react-app.web.app">https://sas-react-app.web.app</a></p>
               </div>
               
               <div class="warning">
@@ -791,28 +864,89 @@ app.post('/api/send-review-link', async (req, res) => {
   }
 });
 
-app.post('/api/create-account', async (req, res) => {
-  try {
-    const { email, password } = req.body;
+app.post('/api/create-account', requireAdmin, async (req, res) => {
+  let createdAuthUid = null;
 
-    if (!email || !password) {
-      return res.status(400).json({ success: false, error: 'Email and password are required' });
+  try {
+    const {
+      email,
+      password,
+      accountCategory = 'org',
+      fullName,
+      organizationId = '',
+      orgType = '',
+      position = '',
+    } = req.body;
+
+    const normalizedEmail = String(email || '').trim();
+    const normalizedFullName = String(fullName || '').trim();
+    const normalizedCategory = accountCategory === 'admin' ? 'admin' : 'org';
+
+    if (!normalizedEmail || !password || !normalizedFullName) {
+      return res.status(400).json({ success: false, error: 'Email, password, and full name are required' });
     }
 
     if (password.length < 8) {
       return res.status(400).json({ success: false, error: 'Password must be at least 8 characters' });
     }
 
+    if (normalizedCategory === 'org' && !organizationId) {
+      return res.status(400).json({ success: false, error: 'Organization is required for organization accounts' });
+    }
+
     if (!adminInitialized) {
       return res.status(503).json({ success: false, error: 'Account creation service is not available. Check backend configuration.' });
     }
 
-    const userRecord = await admin.auth().createUser({ email, password });
-    console.log(`Account created for ${email} (uid: ${userRecord.uid})`);
+    const userRecord = await admin.auth().createUser({ email: normalizedEmail, password });
+    createdAuthUid = userRecord.uid;
+
+    const userDoc =
+      normalizedCategory === 'admin'
+        ? {
+            userId: userRecord.uid,
+            fullName: normalizedFullName,
+            email: normalizedEmail,
+            role: 'Admin',
+            organizationId: '',
+            userRole: String(position || '').trim() || 'SAS Staff',
+            status: 'active',
+            dateCreated: admin.firestore.FieldValue.serverTimestamp(),
+            lastLogin: null,
+          }
+        : {
+            userId: userRecord.uid,
+            fullName: normalizedFullName,
+            email: normalizedEmail,
+            role: String(orgType || '').trim(),
+            organizationId,
+            userRole: 'Officer',
+            status: 'active',
+            dateCreated: admin.firestore.FieldValue.serverTimestamp(),
+            lastLogin: null,
+          };
+
+    await admin.firestore().collection('users').doc(userRecord.uid).set(userDoc);
+
+    console.log(`Account created for ${normalizedEmail} (uid: ${userRecord.uid})`);
+
+    logAdminActionServer({
+      actor: req.authUser,
+      type: 'account_created_by_admin',
+      targetCollection: 'users',
+      targetId: userRecord.uid,
+      targetLabel: normalizedEmail,
+    });
 
     res.json({ success: true, uid: userRecord.uid, message: 'Account created successfully' });
   } catch (error) {
     console.error('Error creating account:', error);
+
+    if (createdAuthUid) {
+      await admin.auth().deleteUser(createdAuthUid).catch((cleanupError) => {
+        console.error(`Failed to clean up Auth user ${createdAuthUid}:`, cleanupError);
+      });
+    }
 
     if (error.code === 'auth/email-already-exists') {
       return res.status(400).json({ success: false, error: 'An account with this email already exists' });
@@ -822,7 +956,7 @@ app.post('/api/create-account', async (req, res) => {
   }
 });
 
-app.post('/api/admin-reset-password', async (req, res) => {
+app.post('/api/admin-reset-password', requireAdmin, async (req, res) => {
   try {
     const { email, newPassword } = req.body;
 
@@ -1048,7 +1182,7 @@ app.get('/api/review/:token/signature-status', async (req, res) => {
   }
 });
 
-app.post('/api/review/:token/signature', signatureUpload.single('signature'), async (req, res) => {
+app.post('/api/review/:token/signature', parseSignatureUpload, async (req, res) => {
   try {
     const ctx = await validateReviewTokenForRequest(req, res);
     if (!ctx) return;
@@ -1720,7 +1854,9 @@ const requireAuth = async (req, res, next) => {
   }
 };
 
-const requireAdmin = async (req, res, next) => {
+// Function declaration (hoisted) so it can be used as middleware by routes
+// registered earlier in the file (e.g. /api/create-account).
+async function requireAdmin(req, res, next) {
   try {
     if (!adminInitialized) {
       return res.status(503).json({ success: false, error: 'Auth service unavailable.' });
@@ -1738,7 +1874,7 @@ const requireAdmin = async (req, res, next) => {
     console.error('requireAdmin: token verification failed', err?.code || err?.message);
     res.status(401).json({ success: false, error: 'Invalid or expired token.' });
   }
-};
+}
 
 // Best-effort admin audit log (mirrors server.js). Never throws.
 const logAdminActionServer = async ({

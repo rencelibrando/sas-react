@@ -148,6 +148,36 @@ button.review-file-link {
   text-align: left;
 }
 
+.review-files-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.review-file-comment-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.review-file-comment-badge.is-unresolved {
+  background: #fdeaea;
+  color: #b3261e;
+  border: 1px solid #f3c2c0;
+}
+
+.review-file-comment-badge.is-resolved {
+  background: #e9f6ec;
+  color: #1e7a36;
+  border: 1px solid #bfe4c7;
+}
+
 .review-decision-section {
   border-top: 1px solid #eee;
   padding-top: 1.5rem;
