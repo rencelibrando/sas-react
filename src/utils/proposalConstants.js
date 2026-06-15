@@ -64,3 +64,8 @@ export const REQUEST_STATUS_LABELS = {
 // A request still blocks the pipeline until the reviewer resolves or cancels it.
 export const isOpenRequest = (r) =>
   r && r.status !== "resolved" && r.status !== "cancelled";
+
+// Normalize a request's attached files: new entries use `files[]`; legacy
+// entries stored a single `file`. Always returns an array.
+export const getRequestFiles = (req) =>
+  Array.isArray(req?.files) ? req.files : req?.file ? [req.file] : [];

@@ -1995,16 +1995,17 @@ export const createAdditionalRequest = async ({
 };
 
 /**
- * Org / ISG submitter uploads (or revises) the file for an additional request.
- * Re-uploading on a request that already has a file archives the prior version
- * into `previousVersion` (cap at 1 prior, mirroring uploadRevision).
+ * Org / ISG submitter uploads a file for an additional request. Multiple files
+ * are allowed per request — each upload is appended to the request's `files[]`
+ * array. Does NOT change status or notify the reviewer; the submitter finalizes
+ * with a single "Send response" (respondToAdditionalRequest + notify) so the
+ * office is pulled back once, not once per file.
  */
 export const uploadAdditionalDocument = async ({
   documentId,
   requestId,
   file,
   userId,
-  responseText,
 }) => {
   if (!documentId || !requestId || !userId) {
     throw new Error("documentId, requestId, and userId are required");
@@ -2029,16 +2030,22 @@ export const uploadAdditionalDocument = async ({
   const idx = requests.findIndex((r) => r.id === requestId);
   if (idx === -1) throw new Error("Request not found");
   const current = requests[idx];
-  if (current.status === "resolved" || current.status === "cancelled") {
-    throw new Error("This request is closed and no longer accepts uploads");
+  if (current.status !== "pending") {
+    throw new Error(
+      "You have already responded to this request. Wait for the reviewer to send a new request."
+    );
   }
 
-  const currentVersion = current.file?.version || 0;
-  const newVersion = currentVersion + 1;
+  // Normalize: legacy entries stored a single `file`; new ones use `files[]`.
+  const existingFiles = Array.isArray(current.files)
+    ? [...current.files]
+    : current.file
+    ? [current.file]
+    : [];
 
   const storageRef = ref(
     storage,
-    `documents/${documentId}/additional/${requestId}/v${newVersion}_${file.name}`
+    `documents/${documentId}/additional/${requestId}/${Date.now()}_${file.name}`
   );
   const snapshot = await uploadBytes(storageRef, file, {
     contentType: file.type,
@@ -2047,38 +2054,24 @@ export const uploadAdditionalDocument = async ({
       originalFileName: file.name,
       documentId,
       additionalRequestId: requestId,
-      version: String(newVersion),
     },
   });
   const fileUrl = await getDownloadURL(snapshot.ref);
   const uploadedAt = Timestamp.fromDate(new Date());
 
-  const previousVersion = current.file
-    ? {
-        fileUrl: current.file.fileUrl,
-        fileName: current.file.fileName,
-        fileSize: current.file.fileSize || null,
-        uploadedAt: current.file.uploadedAt || null,
-        uploadedBy: current.file.uploadedBy || null,
-        version: currentVersion,
-      }
-    : null;
+  existingFiles.push({
+    fileUrl,
+    fileName: file.name,
+    fileSize: file.size,
+    uploadedAt,
+    uploadedBy: userId,
+  });
 
+  // Drop any legacy singular `file`; `files[]` is the source of truth now.
+  const { file: _legacyFile, ...rest } = current;
   requests[idx] = {
-    ...current,
-    status: "responded",
-    ...(responseText?.trim()
-      ? { responseText: responseText.trim(), respondedAt: uploadedAt }
-      : {}),
-    file: {
-      fileUrl,
-      fileName: file.name,
-      fileSize: file.size,
-      uploadedAt,
-      uploadedBy: userId,
-      version: newVersion,
-      ...(previousVersion ? { previousVersion } : {}),
-    },
+    ...rest,
+    files: existingFiles,
     lastUploadedAt: uploadedAt,
   };
 
@@ -2095,20 +2088,19 @@ export const uploadAdditionalDocument = async ({
     status: data.status || "pending",
     previousStatus: data.status || "pending",
     changedBy: userId,
-    remarks:
-      newVersion === 1
-        ? `Uploaded additional document: ${current.label}`
-        : `Revised additional document (v${newVersion}): ${current.label}`,
+    remarks: `Attached document for request "${current.label}": ${file.name}`,
     timestamp: serverTimestamp(),
   });
 
   await batch.commit();
-  return { fileUrl, version: newVersion };
+  return { fileUrl, fileCount: existingFiles.length };
 };
 
 /**
- * Org / ISG submitter posts a written clarification reply (no file) for a request
- * whose type is "clarification" or "both". Sets status to "responded".
+ * Org / ISG submitter finalizes their response to a request: marks it
+ * "responded" and (optionally) records a written reply to the reviewer's
+ * message. Called once after any files are uploaded; the caller then triggers
+ * notifyReviewerOfResponse to re-notify the office.
  */
 export const respondToAdditionalRequest = async ({
   documentId,
@@ -2119,7 +2111,6 @@ export const respondToAdditionalRequest = async ({
   if (!documentId || !requestId || !userId) {
     throw new Error("documentId, requestId, and userId are required");
   }
-  if (!responseText?.trim()) throw new Error("A written reply is required");
 
   const docRef = doc(db, "documents", documentId);
   const snap = await getDoc(docRef);
@@ -2139,15 +2130,17 @@ export const respondToAdditionalRequest = async ({
   const idx = requests.findIndex((r) => r.id === requestId);
   if (idx === -1) throw new Error("Request not found");
   const current = requests[idx];
-  if (current.status === "resolved" || current.status === "cancelled") {
-    throw new Error("This request is closed and no longer accepts replies");
+  if (current.status !== "pending") {
+    throw new Error(
+      "You have already responded to this request. Wait for the reviewer to send a new request."
+    );
   }
 
   const now = Timestamp.fromDate(new Date());
   requests[idx] = {
     ...current,
     status: "responded",
-    responseText: responseText.trim(),
+    ...(responseText?.trim() ? { responseText: responseText.trim() } : {}),
     respondedAt: now,
   };
 
@@ -2164,7 +2157,7 @@ export const respondToAdditionalRequest = async ({
     status: data.status || "pending",
     previousStatus: data.status || "pending",
     changedBy: userId,
-    remarks: `Submitted clarification reply: ${current.label}`,
+    remarks: `Submitted response to request: ${current.label}`,
     timestamp: serverTimestamp(),
   });
 
@@ -2285,8 +2278,8 @@ export const reopenAdditionalRequest = async ({
   if (idx === -1) throw new Error("Request not found");
   const current = requests[idx];
 
-  // Restore status based on whether the submitter already responded.
-  const nextStatus = current.file || current.responseText ? "responded" : "pending";
+  // Reopen makes the request answerable again — the org may respond afresh.
+  const nextStatus = "pending";
   requests[idx] = {
     ...current,
     status: nextStatus,
@@ -2369,4 +2362,55 @@ export const cancelAdditionalRequest = async ({
   });
 
   await batch.commit();
+};
+
+/**
+ * Admin permanently deletes a REJECTED (or legacy returned) activity proposal and
+ * its related records (status history, comments subcollection). Restricted to
+ * rejected/returned proposals so active/approved ones can't be removed by mistake.
+ * Firestore rules already gate document deletes to admins.
+ */
+export const deleteProposal = async (documentId, adminId) => {
+  if (!documentId || !adminId) {
+    throw new Error("documentId and adminId are required");
+  }
+
+  const docRef = doc(db, "documents", documentId);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) throw new Error("Proposal not found");
+  const data = snap.data();
+  if (data.status !== "rejected" && data.status !== "returned") {
+    throw new Error("Only rejected proposals can be deleted.");
+  }
+
+  const batch = writeBatch(db);
+
+  // Status-history entries (top-level collection keyed by documentId).
+  const histSnap = await getDocs(
+    query(collection(db, "documentStatusHistory"), where("documentId", "==", documentId))
+  );
+  histSnap.forEach((d) => batch.delete(d.ref));
+
+  // Inline comments subcollection.
+  const commentsSnap = await getDocs(
+    collection(db, "documents", documentId, "comments")
+  );
+  commentsSnap.forEach((d) => batch.delete(d.ref));
+
+  // The proposal document itself.
+  batch.delete(docRef);
+
+  await batch.commit();
+
+  // NOTE: reviewTokens are intentionally NOT deleted here — Firestore rules lock
+  // them to the Admin SDK (client read/delete denied). Orphaned tokens are inert:
+  // the review endpoints 404 once the proposal document no longer exists.
+
+  logAdminAction({
+    type: "proposal_deleted",
+    targetCollection: "documents",
+    targetId: documentId,
+    targetLabel: data.title || documentId,
+    remarks: "Returned activity proposal deleted",
+  });
 };

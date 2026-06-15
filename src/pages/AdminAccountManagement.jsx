@@ -157,6 +157,12 @@ const AdminAccountManagement = () => {
       return;
     }
 
+    // Changing the contact email means a new office holder — the previously
+    // uploaded e-signature (and old name) no longer apply and must be cleared.
+    const existing = officeProfiles[editingOffice.id];
+    const emailChanged =
+      !!existing?.email && existing.email !== officeForm.email.trim();
+
     setOfficeSaving(true);
     try {
       await upsertOfficeProfile(
@@ -166,21 +172,31 @@ const AdminAccountManagement = () => {
           email: officeForm.email.trim(),
           role: officeForm.role.trim(),
         },
-        auth.currentUser?.uid
+        auth.currentUser?.uid,
+        { clearSignature: emailChanged }
       );
 
-      setOfficeProfiles((prev) => ({
-        ...prev,
-        [editingOffice.id]: {
+      setOfficeProfiles((prev) => {
+        const updated = {
           ...prev[editingOffice.id],
           officeId: editingOffice.id,
           name: officeForm.name.trim(),
           email: officeForm.email.trim(),
           role: officeForm.role.trim(),
-        },
-      }));
+        };
+        if (emailChanged) {
+          delete updated.signatureUrl;
+          delete updated.signatureMime;
+          delete updated.signatureUploadedAt;
+        }
+        return { ...prev, [editingOffice.id]: updated };
+      });
 
-      setSuccessMessage(`${editingOffice.label} profile saved successfully.`);
+      setSuccessMessage(
+        emailChanged
+          ? `${editingOffice.label} profile saved. The e-signature was cleared — the new office holder must re-upload it on their next approval.`
+          : `${editingOffice.label} profile saved successfully.`
+      );
       setShowOfficeModal(false);
     } catch (err) {
       setOfficeError(err.message || "Failed to save office profile.");
@@ -590,11 +606,34 @@ const AdminAccountManagement = () => {
                     <input
                       type="email"
                       value={officeForm.email}
-                      onChange={(e) => setOfficeForm((prev) => ({ ...prev, email: e.target.value }))}
+                      onChange={(e) => {
+                        const newEmail = e.target.value;
+                        setOfficeForm((prev) => {
+                          const storedEmail = officeProfiles[editingOffice.id]?.email || "";
+                          const storedName = officeProfiles[editingOffice.id]?.name || "";
+                          // New email = new office holder: drop the old name so the
+                          // admin enters the new one (e-signature is cleared on save).
+                          const clearName =
+                            newEmail.trim() !== storedEmail && prev.name === storedName;
+                          return {
+                            ...prev,
+                            email: newEmail,
+                            ...(clearName ? { name: "" } : {}),
+                          };
+                        });
+                      }}
                       placeholder="office@earist.edu.ph"
                     />
                     <small>Tokenized review links will be sent to this address automatically.</small>
                   </div>
+                  {officeProfiles[editingOffice.id]?.email &&
+                    officeForm.email.trim() !== officeProfiles[editingOffice.id].email && (
+                      <p className="acct-form-error" style={{ marginTop: 4 }}>
+                        Changing the email replaces the office holder: the saved name and
+                        e-signature will be cleared, and the new holder must re-upload
+                        their e-signature on their next approval.
+                      </p>
+                    )}
                   <p className="office-modal-hint" style={{ marginTop: 12, fontSize: "0.85rem" }}>
                     <strong>Note:</strong> The e-signature image is uploaded by the
                     office holder themselves on their first approval — admin cannot

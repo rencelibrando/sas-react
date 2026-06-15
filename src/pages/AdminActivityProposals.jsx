@@ -17,6 +17,7 @@ import {
   resolveAdditionalRequest,
   reopenAdditionalRequest,
   cancelAdditionalRequest,
+  deleteProposal,
 } from "../services/documentService";
 import { getAllOfficeProfiles } from "../services/officeService";
 import {
@@ -35,7 +36,7 @@ import {
   getProposalDisplayStatus,
   getProposalHistoryDisplay,
 } from "../utils/formatters";
-import { REQUIREMENT_LABELS } from "../utils/proposalConstants";
+import { REQUIREMENT_LABELS, getRequestFiles } from "../utils/proposalConstants";
 import "../styles/colors.css";
 import "./AdminActivityProposals.css";
 
@@ -58,7 +59,7 @@ const STAGE_TABS = [
   { id: "sas_release", label: "SAS Release" },
   { id: "isg_distribution", label: "ISG Distribution" },
   { id: "completed", label: "Completed" },
-  { id: "returned", label: "Returned" },
+  { id: "rejected", label: "Rejected" },
 ];
 
 const getStageLabel = (stage) =>
@@ -188,18 +189,22 @@ const AdditionalRequestsPanel = ({
                       {REQUEST_STATUS_LABEL[req.status] || req.status}
                     </span>
                   </div>
-                  {req.file && (
-                    <div className="additional-request-file">
+                  {req.responseText && (
+                    <p className="additional-request-reply">
+                      <strong>Reply:</strong> {req.responseText}
+                    </p>
+                  )}
+                  {getRequestFiles(req).map((f, i) => (
+                    <div key={i} className="additional-request-file">
                       <button
                         type="button"
                         className="file-download-link file-preview-btn"
-                        onClick={() => onPreview(req)}
+                        onClick={() => onPreview(req, f, i)}
                       >
-                        📄 {req.file.fileName}
-                        {req.file.version > 1 ? ` (v${req.file.version})` : ""}
+                        📄 {f.fileName}
                       </button>
                     </div>
-                  )}
+                  ))}
                 </div>
                 <div className="additional-request-actions">
                   {isOpen && (
@@ -250,6 +255,10 @@ const AdminActivityProposals = () => {
   const [activeTab, setActiveTab] = useState("sas_review");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+
+  // Delete-returned-proposal confirmation
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   // Filters
   const [searchQuery, setSearchQuery] = useState("");
@@ -377,6 +386,23 @@ const AdminActivityProposals = () => {
     }
   };
 
+  const handleDeleteProposal = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    setError("");
+    try {
+      await deleteProposal(deleteTarget.documentId, auth.currentUser.uid);
+      setSuccess(`Deleted "${deleteTarget.title}".`);
+      setDeleteTarget(null);
+      await loadProposals();
+    } catch (err) {
+      console.error("Error deleting proposal:", err);
+      setError(err.message || "Failed to delete proposal.");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const applyFilters = () => {
     let filtered = [...enrichedProposals];
 
@@ -385,8 +411,11 @@ const AdminActivityProposals = () => {
         filtered = filtered.filter(
           (p) => p.status === "approved" && !p.pipeline?.currentStage
         );
-      } else if (activeTab === "returned") {
-        filtered = filtered.filter((p) => p.status === "returned");
+      } else if (activeTab === "rejected") {
+        // Both reviewer rejections and legacy SAS "returned" land here.
+        filtered = filtered.filter(
+          (p) => p.status === "rejected" || p.status === "returned"
+        );
       } else {
         filtered = filtered.filter(
           (p) => p.pipeline?.currentStage === activeTab
@@ -982,6 +1011,15 @@ const AdminActivityProposals = () => {
                           >
                             View
                           </button>
+                          {(proposal.status === "rejected" ||
+                            proposal.status === "returned") && (
+                            <button
+                              className="action-button action-button-delete"
+                              onClick={() => setDeleteTarget(proposal)}
+                            >
+                              Delete
+                            </button>
+                          )}
                         </td>
                       </tr>
                     );
@@ -1167,15 +1205,13 @@ const AdminActivityProposals = () => {
                               onResolve={handleResolveRequest}
                               onReopen={handleReopenRequest}
                               onCancel={handleCancelRequest}
-                              onPreview={(req) =>
+                              onPreview={(req, f, i) =>
                                 setPreviewFile({
-                                  fileUrl: req.file.fileUrl,
-                                  fileName: req.file.fileName,
+                                  fileUrl: f.fileUrl,
+                                  fileName: f.fileName,
                                   title: req.label,
                                   documentId: selectedProposal.documentId,
-                                  requirementKey: `additional:${req.id}`,
-                                  fileVersion: req.file.version || 1,
-                                  previousVersion: req.file.previousVersion || null,
+                                  requirementKey: `additional:${req.id}:${i}`,
                                 })
                               }
                             />
@@ -1563,6 +1599,53 @@ const AdminActivityProposals = () => {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div
+          className="modal-overlay"
+          onClick={() => !deleting && setDeleteTarget(null)}
+        >
+          <div
+            className="modal-content modal-content-sm"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3>Delete Proposal</h3>
+              <button
+                className="modal-close"
+                onClick={() => setDeleteTarget(null)}
+                disabled={deleting}
+              >
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              <p className="return-instruction">
+                Permanently delete <strong>{deleteTarget.title}</strong>? This
+                removes the proposal, its history, review links, and comments.
+                This cannot be undone.
+              </p>
+              {error && <p className="form-error">{error}</p>}
+              <div className="modal-actions">
+                <button
+                  className="form-button form-button-secondary"
+                  onClick={() => setDeleteTarget(null)}
+                  disabled={deleting}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="form-button form-button-danger"
+                  onClick={handleDeleteProposal}
+                  disabled={deleting}
+                >
+                  {deleting ? "Deleting..." : "Delete Permanently"}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

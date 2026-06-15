@@ -281,6 +281,18 @@
   color: var(--white);
 }
 
+.action-button-delete {
+  background: rgba(185, 28, 28, 0.08);
+  color: #b91c1c;
+  border: 1px solid rgba(185, 28, 28, 0.3);
+  margin-left: 0.4rem;
+}
+
+.action-button-delete:hover {
+  background: #b91c1c;
+  color: var(--white);
+}
+
 .status-badge {
   padding: 0.25rem 0.75rem;
   border-radius: 12px;
@@ -710,6 +722,11 @@ button.file-download-link {
 .stage-badge-returned {
   background: rgba(255, 152, 0, 0.2);
   color: #e65100;
+}
+
+.stage-badge-rejected {
+  background: rgba(185, 28, 28, 0.15);
+  color: #b91c1c;
 }
 
 /* SAS Review action area inside detail modal */

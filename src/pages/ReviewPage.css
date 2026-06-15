@@ -188,15 +188,15 @@ button.review-file-link {
   color: #fff;
 }
 
-.review-btn-return {
+.review-btn-reject {
   background: #fff;
-  color: #b45309;
-  border-color: #b45309;
+  color: #b91c1c;
+  border-color: #b91c1c;
 }
 
-.review-btn-return.is-selected,
-.review-btn-return:hover:not(:disabled) {
-  background: #b45309;
+.review-btn-reject.is-selected,
+.review-btn-reject:hover:not(:disabled) {
+  background: #b91c1c;
   color: #fff;
 }
 

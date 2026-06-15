@@ -45,6 +45,7 @@ export const ADMIN_ACTION_TYPES = [
   "proposal_returned_from_sas",
   "proposal_released",
   "proposal_review_link_regenerated",
+  "proposal_deleted",
   // Server-side endpoints
   "account_created_by_admin",
   "admin_password_reset",
@@ -68,6 +69,7 @@ export const ADMIN_ACTION_LABELS = {
   proposal_returned_from_sas: "Proposal returned to organization",
   proposal_released: "Proposal released",
   proposal_review_link_regenerated: "Review link regenerated",
+  proposal_deleted: "Proposal deleted",
   account_created_by_admin: "Account created (by admin)",
   admin_password_reset: "Password reset (by admin)",
 };

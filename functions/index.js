@@ -979,9 +979,11 @@ app.get('/api/review/:token', async (req, res) => {
             type: r.type || 'document',
             status: r.status,
             responseText: r.responseText || '',
-            file: r.file
-              ? { fileUrl: r.file.fileUrl, fileName: r.file.fileName, version: r.file.version || 1 }
-              : null,
+            files: Array.isArray(r.files)
+              ? r.files.map((f) => ({ fileUrl: f.fileUrl, fileName: f.fileName }))
+              : r.file
+              ? [{ fileUrl: r.file.fileUrl, fileName: r.file.fileName }]
+              : [],
           })),
         expiresAt: expiresAtMillis || null,
       },
@@ -1109,11 +1111,13 @@ app.post('/api/review/:token/decision', async (req, res) => {
     const { action, remarks } = req.body || {};
 
     if (!token) return res.status(400).json({ success: false, error: 'Token is required' });
-    if (action !== 'approve' && action !== 'return') {
-      return res.status(400).json({ success: false, error: 'Action must be "approve" or "return"' });
+    // "reject" is the terminal negative decision; "return" is kept as a legacy
+    // alias that behaves identically (sets the proposal to rejected).
+    if (!['approve', 'reject', 'return'].includes(action)) {
+      return res.status(400).json({ success: false, error: 'Action must be "approve" or "reject"' });
     }
-    if (action === 'return' && (!remarks || !remarks.trim())) {
-      return res.status(400).json({ success: false, error: 'Remarks are required when returning a proposal' });
+    if ((action === 'reject' || action === 'return') && (!remarks || !remarks.trim())) {
+      return res.status(400).json({ success: false, error: 'A reason is required when rejecting a proposal' });
     }
 
     const db = admin.firestore();
@@ -1377,8 +1381,9 @@ app.post('/api/review/:token/decision', async (req, res) => {
         timestamp: FieldValue.serverTimestamp(),
       });
     } else {
+      // Reject — terminal. The proposal cannot proceed or be resubmitted.
       batch.update(docRef, {
-        status: 'returned',
+        status: 'rejected',
         remarks: remarks.trim(),
         'pipeline.currentStage': null,
         'pipeline.stages': stages,
@@ -1389,10 +1394,10 @@ app.post('/api/review/:token/decision', async (req, res) => {
       const histRef = db.collection('documentStatusHistory').doc();
       batch.set(histRef, {
         documentId: tokenData.documentId,
-        status: 'returned',
+        status: 'rejected',
         previousStatus: docData.status,
         changedBy: `token:${token}`,
-        remarks: `Returned at ${tokenData.stage} — ${remarks.trim()}`,
+        remarks: `Rejected at ${tokenData.stage} — ${remarks.trim()}`,
         timestamp: FieldValue.serverTimestamp(),
       });
     }

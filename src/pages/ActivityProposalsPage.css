@@ -651,6 +651,28 @@ button.file-download-link {
   resize: vertical;
 }
 
+.additional-request-reply-label {
+  display: block;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #555;
+  margin-bottom: 0.3rem;
+}
+
+.additional-request-files {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.4rem;
+}
+
+.additional-request-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
 .request-status-pill.status-resolved {
   background: #e8f5e9;
   border-color: #66bb6a;

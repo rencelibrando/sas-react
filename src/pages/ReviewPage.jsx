@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import sasLogo from "../assets/images/logos/sas-logo.png";
 import LoadingScreen from "../components/LoadingScreen";
 import DocumentPreviewModal from "../components/documents/DocumentPreviewModal";
-import { REQUIREMENT_LABELS } from "../utils/proposalConstants";
+import { REQUIREMENT_LABELS, getRequestFiles } from "../utils/proposalConstants";
 import "../styles/colors.css";
 import "./ReviewPage.css";
 
@@ -112,7 +112,7 @@ const ReviewPage = () => {
   const [loadError, setLoadError] = useState("");
   const [review, setReview] = useState(null);
 
-  const [decision, setDecision] = useState(null); // "approve" | "return" | "request"
+  const [decision, setDecision] = useState(null); // "approve" | "reject" | "request"
   const [remarks, setRemarks] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
@@ -280,7 +280,7 @@ const ReviewPage = () => {
       setSubmitSuccess(
         decision === "approve"
           ? "Decision submitted: Approved. Your e-signature has been stamped on the endorsement letter."
-          : "Decision submitted: Returned to the requesting organization."
+          : "Decision submitted: Rejected. The proposal has been rejected and can no longer proceed."
       );
       setShowPreviewModal(false);
     } catch (err) {
@@ -363,8 +363,8 @@ const ReviewPage = () => {
       await submitRequest();
       return;
     }
-    if (decision === "return" && !remarks.trim()) {
-      setSubmitError("Please provide remarks before returning the proposal.");
+    if (decision === "reject" && !remarks.trim()) {
+      setSubmitError("Please provide a reason before rejecting the proposal.");
       return;
     }
     if (decision === "approve") {
@@ -376,7 +376,7 @@ const ReviewPage = () => {
       }
       if (unresolvedReviewerTotal > 0) {
         setSubmitError(
-          `You still have ${unresolvedReviewerTotal} unresolved comment${unresolvedReviewerTotal === 1 ? "" : "s"} on this proposal. Resolve them or return the proposal for revision before approving.`
+          `You still have ${unresolvedReviewerTotal} unresolved comment${unresolvedReviewerTotal === 1 ? "" : "s"} on this proposal. Resolve them before approving, or reject the proposal.`
         );
         return;
       }
@@ -508,23 +508,23 @@ const ReviewPage = () => {
                               <strong>Submitter's reply:</strong> {r.responseText}
                             </p>
                           )}
-                          {r.file && (
+                          {getRequestFiles(r).map((f, i) => (
                             <button
+                              key={i}
                               type="button"
                               className="review-file-link"
                               onClick={() =>
                                 setPreviewFile({
-                                  fileUrl: r.file.fileUrl,
-                                  fileName: r.file.fileName,
+                                  fileUrl: f.fileUrl,
+                                  fileName: f.fileName,
                                   title: r.label,
-                                  requirementKey: `additional:${r.id}`,
+                                  requirementKey: `additional:${r.id}:${i}`,
                                 })
                               }
                             >
-                              📄 {r.file.fileName}
-                              {r.file.version > 1 ? ` (v${r.file.version})` : ""}
+                              📄 {f.fileName}
                             </button>
-                          )}
+                          ))}
                           <div className="review-request-item-footer">
                             <span className={`request-status-pill status-${r.status}`}>
                               {closed
@@ -572,11 +572,11 @@ const ReviewPage = () => {
                   </button>
                   <button
                     type="button"
-                    className={`review-btn review-btn-return ${decision === "return" ? "is-selected" : ""}`}
-                    onClick={() => { setDecision("return"); setSubmitError(""); }}
+                    className={`review-btn review-btn-reject ${decision === "reject" ? "is-selected" : ""}`}
+                    onClick={() => { setDecision("reject"); setSubmitError(""); }}
                     disabled={submitting}
                   >
-                    Return for Revision
+                    Reject
                   </button>
                 </div>
 
@@ -625,7 +625,7 @@ const ReviewPage = () => {
                     <label className="review-remarks-label">
                       {decision === "request"
                         ? "Instructions / message to the submitter (optional)"
-                        : `Remarks ${decision === "return" ? "(required)" : "(optional)"}`}
+                        : `Remarks ${decision === "reject" ? "(required)" : "(optional)"}`}
                     </label>
                     <textarea
                       className="review-remarks-input"
@@ -633,8 +633,8 @@ const ReviewPage = () => {
                       value={remarks}
                       onChange={(e) => setRemarks(e.target.value)}
                       placeholder={
-                        decision === "return"
-                          ? "State the reason for returning this proposal..."
+                        decision === "reject"
+                          ? "State the reason for rejecting this proposal..."
                           : decision === "request"
                           ? "Describe what you need from the organization..."
                           : "Optional notes for the SAS office..."
@@ -649,8 +649,7 @@ const ReviewPage = () => {
                     ⚠ You still have {unresolvedReviewerTotal} unresolved
                     {unresolvedReviewerTotal === 1 ? " comment" : " comments"} on
                     this proposal. Resolve each one (open the affected file's
-                    comments panel) or return the proposal for revision before
-                    approving.
+                    comments panel) before approving, or reject the proposal.
                   </p>
                 )}
 
@@ -672,7 +671,7 @@ const ReviewPage = () => {
                     onClick={handleSubmit}
                     disabled={
                       submitting ||
-                      (decision === "return" && !remarks.trim()) ||
+                      (decision === "reject" && !remarks.trim()) ||
                       (decision === "request" && !requestLabel.trim()) ||
                       (decision === "approve" &&
                         (!summaryReady ||
